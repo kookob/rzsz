@@ -107,6 +107,35 @@ fn is_safe_path(path: &Path) -> bool {
     !path.is_absolute()
 }
 
+/// Acknowledge ZFIN and consume the sender's "OO" (Over-and-Out).
+/// Equivalent to ackbibi() in lrz.c.
+fn ackbibi<R: Read + AsFd, W: Write>(
+    session: &Session,
+    reader: &mut ModemReader<R>,
+    out: &mut W,
+) -> Result<(), ZError> {
+    for _ in 0..3 {
+        reader.purge();
+        // Send our own ZFIN
+        let hdr = store_position(0);
+        // Use hex header like C lrz does
+        let mut enc = FrameEncoder::new();
+        enc.send_hex_header(FrameType::ZFin, &hdr, out)?;
+
+        // Wait for 'O' (first byte of "OO")
+        match reader.read_byte(session.rx_timeout_tenths) {
+            Ok(b'O') => {
+                // Consume second 'O'
+                let _ = reader.read_byte(1);
+                return Ok(());
+            }
+            Err(_) => continue, // timeout, retry
+            _ => continue,
+        }
+    }
+    Ok(())
+}
+
 /// Send ZRINIT and wait for sender's response.
 /// Equivalent to tryz() in lrz.c.
 pub fn try_zmodem<R: Read + AsFd, W: Write>(
@@ -149,7 +178,8 @@ pub fn try_zmodem<R: Read + AsFd, W: Write>(
                     continue;
                 }
                 FrameType::ZFin => {
-                    session.send_pos_header(FrameType::ZFin, 0, out)?;
+                    // ackbibi: acknowledge ZFIN and consume "OO"
+                    ackbibi(session, reader, out)?;
                     return Err(ZError::Cancelled);
                 }
                 FrameType::ZFreeCnt => {
