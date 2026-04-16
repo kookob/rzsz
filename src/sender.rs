@@ -100,12 +100,18 @@ impl BlockSizer {
 }
 
 /// Wait for receiver init (ZRINIT). Equivalent to getzrxinit() in lsz.c.
+/// Maximum ZRQINIT attempts before giving up (keep low for responsive cancel).
+const INIT_RETRIES: u32 = 4;
+/// Timeout per init attempt in tenths of seconds (3 seconds).
+const INIT_TIMEOUT_TENTHS: u32 = 30;
+
 pub fn get_receiver_init<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
     out: &mut W,
 ) -> Result<(), ZError> {
     let mut retries = 0u32;
+    let mut can_count = 0u32;
 
     // Send "rz\r" to trigger auto-start on the receiving end
     out.write_all(b"rz\r")?;
@@ -115,12 +121,16 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
         // Send ZRQINIT
         session.send_pos_header(FrameType::ZrqInit, 0, out)?;
 
-        match session.receive_header(reader) {
+        // Use short timeout during init for responsive cancel
+        let saved_timeout = session.rx_timeout_tenths;
+        session.rx_timeout_tenths = INIT_TIMEOUT_TENTHS;
+        let result = session.receive_header(reader);
+        session.rx_timeout_tenths = saved_timeout;
+
+        match result {
             Ok(hdr) => match hdr.frame_type {
                 FrameType::ZrInit => {
-                    // Parse receiver capabilities from header
-                    // ZModem header layout: hdr[0]=ZF3, hdr[1]=ZF2, hdr[2]=ZF1, hdr[3]=ZF0
-                    let rx_flags = hdr.hdr[3]; // ZF0: capabilities
+                    let rx_flags = hdr.hdr[3];
                     let rx_buflen = ((hdr.hdr[0] as u16) << 8) | hdr.hdr[1] as u16;
 
                     if rx_flags & CANFC32 != 0 {
@@ -139,7 +149,6 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
                     return Ok(());
                 }
                 FrameType::ZChallenge => {
-                    // Echo back the challenge value
                     session.send_pos_header(
                         FrameType::ZAck,
                         recover_position(&hdr.hdr),
@@ -147,20 +156,30 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
                     )?;
                     continue;
                 }
-                FrameType::ZAbort | FrameType::ZFin => {
+                FrameType::ZAbort | FrameType::ZFin | FrameType::ZCan => {
                     return Err(ZError::Cancelled);
                 }
                 _ => {
                     retries += 1;
                 }
             },
+            Err(ZError::Cancelled) => {
+                // CAN*5 detected by frame parser
+                return Err(ZError::Cancelled);
+            }
             Err(ZError::Timeout) => {
+                retries += 1;
+            }
+            Err(ZError::GarbageCount(_)) => {
+                // Lots of garbage — might be terminal noise after cancel.
+                // Check if we've seen CAN bytes in the garbage by trying
+                // to read a few more bytes quickly.
                 retries += 1;
             }
             Err(e) => return Err(e),
         }
 
-        if retries > RETRY_MAX {
+        if retries > INIT_RETRIES {
             return Err(ZError::TooManyErrors);
         }
     }

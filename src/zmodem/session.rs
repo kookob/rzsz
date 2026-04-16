@@ -334,9 +334,22 @@ impl Session {
         reader: &mut ModemReader<R>,
     ) -> Result<ReceivedHeader, ZError> {
         let mut garbage_count: usize = 0;
+        let mut can_count: u32 = 0;
 
         loop {
             let c = reader.read_byte(self.rx_timeout_tenths)?;
+
+            // Detect CAN*5 cancel sequence (terminal sends this on abort)
+            if c == 0x18 {
+                can_count += 1;
+                if can_count >= 5 {
+                    return Err(ZError::Cancelled);
+                }
+                garbage_count += 1;
+                continue;
+            } else {
+                can_count = 0;
+            }
 
             match c {
                 ZPAD => {}
