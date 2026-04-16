@@ -13,6 +13,10 @@ path = "src/bin/rsz.rs"
 name = "rrz"
 path = "src/bin/rrz.rs"
 
+[[bin]]
+name = "zz"
+path = "src/bin/zz.rs"
+
 [dependencies]
 nix = { version = "0.29", features = ["term", "poll", "signal", "fs"] }
 signal-hook = "0.3"
