@@ -10,6 +10,7 @@ pub struct ModemReader<R: Read + AsFd> {
     buffer: Vec<u8>,
     pos: usize,
     len: usize,
+    pushback: Option<u8>,
 }
 
 impl<R: Read + AsFd> ModemReader<R> {
@@ -19,12 +20,21 @@ impl<R: Read + AsFd> ModemReader<R> {
             buffer: vec![0u8; buffer_size],
             pos: 0,
             len: 0,
+            pushback: None,
         }
     }
 
     /// Read a single byte with timeout (in tenths of seconds).
     /// Returns Ok(byte) or Err on timeout/IO error.
+    /// Push a byte back into the reader (1-byte lookahead).
+    pub fn unread_byte(&mut self, b: u8) {
+        self.pushback = Some(b);
+    }
+
     pub fn read_byte(&mut self, timeout_tenths: u32) -> io::Result<u8> {
+        if let Some(b) = self.pushback.take() {
+            return Ok(b);
+        }
         if self.pos < self.len {
             let b = self.buffer[self.pos];
             self.pos += 1;

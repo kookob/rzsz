@@ -43,7 +43,7 @@ impl Default for ReceiverConfig {
             clobber: false,
             protect: false,
             resume: false,
-            restricted: true,
+            restricted: false,
             binary: true,
             ascii: false,
             escape_ctrl: false,
@@ -203,6 +203,11 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
         let file_info = parse_file_header(&header_data)
             .ok_or_else(|| ZError::FrameError("invalid file header".into()))?;
 
+        // Batch-end marker: sender sends an empty filename to signal no more files.
+        if file_info.name.is_empty() {
+            break Ok(received_files);
+        }
+
         // Security: check path in restricted mode
         let file_path = if config.junk_path {
             config.output_dir.join(
@@ -235,7 +240,7 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
         session.send_pos_header(FrameType::ZRpos, start_pos, out)?;
 
         // Receive file data
-        match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size) {
+        match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size, config) {
             Ok(bytes) => {
                 eprintln!(
                     "{}: {} bytes received",
@@ -259,7 +264,16 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     path: &Path,
     start_pos: u64,
     _expected_size: u64,
+    config: &ReceiverConfig,
 ) -> Result<u64, ZError> {
+    // Enforce protect / clobber flags before creating the file.
+    if path.exists() {
+        if config.protect || !config.clobber {
+            session.send_pos_header(FrameType::ZSkip, 0, out)?;
+            return Ok(0);
+        }
+    }
+
     // Create parent directories if needed
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(ZError::Io)?;

@@ -152,61 +152,55 @@ impl Session {
     }
 
     /// Read a ZDLE-escaped byte. Equivalent to zdlread() in zm.c.
+    /// Uses iterative loop instead of recursion to avoid stack overflow on noise.
     fn read_escaped<R: Read + AsFd>(
         &self,
         reader: &mut ModemReader<R>,
     ) -> Result<u16, ZError> {
-        let c = reader.read_byte(self.rx_timeout_tenths)?;
-        // Quick check for non-control characters
-        if c & 0x60 != 0 {
-            return Ok(c as u16);
-        }
-
-        // Handle special cases
-        match c {
-            ZDLE => {}
-            XON | XOFF | 0x91 | 0x93 => {
-                // Recurse (filter flow control)
-                return self.read_escaped(reader);
+        loop {
+            let c = reader.read_byte(self.rx_timeout_tenths)?;
+            // Quick check for non-control characters
+            if c & 0x60 != 0 {
+                return Ok(c as u16);
             }
-            _ if self.escape_all_ctrl && (c & 0x60) == 0 => {
-                return self.read_escaped(reader);
-            }
-            _ => return Ok(c as u16),
-        }
 
-        // After ZDLE
-        let c = reader.read_byte(self.rx_timeout_tenths)?;
-        match c {
-            // CAN*5 abort detection
-            0x18 => {
-                let c2 = reader.read_byte(self.rx_timeout_tenths)?;
-                if c2 == 0x18 {
-                    let c3 = reader.read_byte(self.rx_timeout_tenths)?;
-                    if c3 == 0x18 {
-                        let c4 = reader.read_byte(self.rx_timeout_tenths)?;
-                        if c4 == 0x18 {
-                            return Err(ZError::Cancelled);
+            // Handle special cases
+            match c {
+                ZDLE => {}
+                XON | XOFF | 0x91 | 0x93 => continue, // Filter flow control
+                _ if self.escape_all_ctrl && (c & 0x60) == 0 => continue,
+                _ => return Ok(c as u16),
+            }
+
+            // After ZDLE — read the escaped byte
+            loop {
+                let c = reader.read_byte(self.rx_timeout_tenths)?;
+                match c {
+                    // CAN*5 abort detection
+                    0x18 => {
+                        let c2 = reader.read_byte(self.rx_timeout_tenths)?;
+                        if c2 == 0x18 {
+                            let c3 = reader.read_byte(self.rx_timeout_tenths)?;
+                            if c3 == 0x18 {
+                                let c4 = reader.read_byte(self.rx_timeout_tenths)?;
+                                if c4 == 0x18 {
+                                    return Err(ZError::Cancelled);
+                                }
+                            }
                         }
+                        return Err(ZError::FrameError("partial CAN sequence".into()));
                     }
+                    ZCRCE | ZCRCG | ZCRCQ | ZCRCW => {
+                        return Ok(c as u16 | 0x100);
+                    }
+                    ZRUB0 => return Ok(0x7f),
+                    ZRUB1 => return Ok(0xff),
+                    XON | XOFF | 0x91 | 0x93 => continue, // Filter and retry
+                    _ if self.escape_all_ctrl && (c & 0x60) == 0 => continue,
+                    _ if (c & 0x60) == 0x40 => return Ok((c ^ 0x40) as u16),
+                    _ => return Err(ZError::FrameError(format!("bad ZDLE sequence: {c:#x}"))),
                 }
-                return Err(ZError::FrameError("partial CAN sequence".into()));
             }
-            ZCRCE | ZCRCG | ZCRCQ | ZCRCW => {
-                // Frame end marker — return with GOTOR flag (0x100)
-                Ok(c as u16 | 0x100)
-            }
-            ZRUB0 => Ok(0x7f),
-            ZRUB1 => Ok(0xff),
-            XON | XOFF | 0x91 | 0x93 => {
-                // Flow control after ZDLE — retry
-                self.read_escaped(reader)
-            }
-            _ if self.escape_all_ctrl && (c & 0x60) == 0 => {
-                self.read_escaped(reader)
-            }
-            _ if (c & 0x60) == 0x40 => Ok((c ^ 0x40) as u16),
-            _ => Err(ZError::FrameError(format!("bad ZDLE sequence: {c:#x}"))),
         }
     }
 
@@ -316,11 +310,10 @@ impl Session {
         if c == b'\r' {
             let _ = reader.read_byte(self.rx_timeout_tenths); // LF
         }
-        // Possible XON
-        if let Ok(xon) = reader.read_byte(1) {
-            if xon != XON {
-                // Not XON — this byte belongs to next frame, but we've consumed it
-                // In a full implementation we'd push it back
+        // Possible XON — push back if it's not XON (belongs to next frame)
+        if let Ok(b) = reader.read_byte(1) {
+            if b != XON {
+                reader.unread_byte(b);
             }
         }
 

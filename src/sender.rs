@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::io::{Read, Write, Seek, SeekFrom, BufReader};
 use std::os::unix::io::AsFd;
 use std::path::Path;
-use std::time::Instant;
 
 use crate::serial::reader::ModemReader;
 use crate::zmodem::frame::*;
@@ -265,8 +264,16 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     // Wait for receiver response
     loop {
         match session.receive_header(reader)? {
-            hdr if hdr.frame_type == FrameType::ZrInit => {
-                // Receiver didn't get our ZFILE, resend
+            _hdr if _hdr.frame_type == FrameType::ZrInit => {
+                // Receiver didn't get our ZFILE — resend header + data
+                let hdr = [0u8; 4];
+                let escape = session.escape_table.clone();
+                session.encoder.send_binary_header(
+                    FrameType::ZFile, &hdr, 0, &escape, out,
+                )?;
+                session.encoder.send_data(
+                    &file_header, FrameEnd::CrcW, &escape, out,
+                )?;
                 continue;
             }
             hdr if hdr.frame_type == FrameType::ZSkip => {
@@ -287,7 +294,7 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     }
 }
 
-/// Send file data starting from a position.
+/// Send file data starting from a position. Uses iterative resync (no recursion).
 fn send_file_data<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
@@ -298,101 +305,106 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     config: &SenderConfig,
 ) -> Result<u64, ZError> {
     let mut file = BufReader::new(File::open(path).map_err(ZError::Io)?);
-    if start_pos > 0 {
-        file.seek(SeekFrom::Start(start_pos)).map_err(ZError::Io)?;
-    }
-
     let mut sizer = BlockSizer::new(config.max_block.min(MAX_BLOCK));
     let mut buf = vec![0u8; MAX_BLOCK];
     let mut position = start_pos;
     let mut bytes_sent: u64 = 0;
-    let _start_time = Instant::now();
-
-    // Send ZDATA header with starting position
-    let escape = session.escape_table.clone();
-    session.encoder.send_binary_header(
-        FrameType::ZData,
-        &store_position(position),
-        0,
-        &escape,
-        out,
-    )?;
-
-    loop {
-        let blklen = sizer.current();
-        let to_read = blklen.min((file_size - position) as usize);
-        if to_read == 0 {
-            break;
-        }
-
-        let n = file.get_mut().read(&mut buf[..to_read]).map_err(ZError::Io)?;
-        if n == 0 {
-            break; // EOF
-        }
-
-        // Determine frame end type
-        let at_eof = position + n as u64 >= file_size;
-        let frame_end = if at_eof {
-            FrameEnd::CrcE
-        } else {
-            FrameEnd::CrcG // Continue without ACK for streaming
-        };
-
-        let escape = session.escape_table.clone();
-        session.encoder.send_data(&buf[..n], frame_end, &escape, out)?;
-        position += n as u64;
-        bytes_sent += n as u64;
-        sizer.record_success(n);
-
-        if at_eof {
-            break;
-        }
-    }
-
-    // Send ZEOF
-    session.send_pos_header(FrameType::ZEof, position, out)?;
-
-    // Wait for response
     let mut retries = 0u32;
-    loop {
-        match session.receive_header(reader) {
-            Ok(hdr) => match hdr.frame_type {
-                FrameType::ZrInit => {
-                    // Receiver ready for next file — success
-                    return Ok(bytes_sent);
-                }
-                FrameType::ZAck => {
-                    return Ok(bytes_sent);
-                }
-                FrameType::ZRpos => {
-                    // Receiver wants resync — in a full implementation
-                    // we'd seek back and retransmit from that position
-                    retries += 1;
-                    if retries > RETRY_MAX {
-                        return Err(ZError::TooManyErrors);
-                    }
-                    sizer.record_error();
 
-                    let new_pos = recover_position(&hdr.hdr);
-                    return send_file_data(session, reader, out, path, new_pos, file_size, config);
-                }
-                FrameType::ZSkip => return Ok(0),
-                _ => {
+    // Outer loop: handles ZRPOS resync by seeking and restarting data send
+    'resync: loop {
+        file.seek(SeekFrom::Start(position)).map_err(ZError::Io)?;
+
+        // Send ZDATA header with current position
+        let escape = session.escape_table.clone();
+        session.encoder.send_binary_header(
+            FrameType::ZData,
+            &store_position(position),
+            0,
+            &escape,
+            out,
+        )?;
+
+        // Inner loop: send data blocks
+        loop {
+            let blklen = sizer.current();
+            let remaining = file_size.saturating_sub(position) as usize;
+            let to_read = blklen.min(remaining);
+            if to_read == 0 {
+                break;
+            }
+
+            let n = file.get_mut().read(&mut buf[..to_read]).map_err(ZError::Io)?;
+            if n == 0 {
+                break;
+            }
+
+            let at_eof = position + n as u64 >= file_size;
+            let frame_end = if at_eof {
+                FrameEnd::CrcE
+            } else {
+                FrameEnd::CrcG
+            };
+
+            let escape = session.escape_table.clone();
+            session.encoder.send_data(&buf[..n], frame_end, &escape, out)?;
+            position += n as u64;
+            bytes_sent += n as u64;
+            sizer.record_success(n);
+
+            if at_eof {
+                break;
+            }
+        }
+
+        // Send ZEOF
+        session.send_pos_header(FrameType::ZEof, position, out)?;
+
+        // Wait for response
+        loop {
+            match session.receive_header(reader) {
+                Ok(hdr) => match hdr.frame_type {
+                    FrameType::ZrInit => {
+                        return Ok(bytes_sent);
+                    }
+                    FrameType::ZAck => {
+                        return Ok(bytes_sent);
+                    }
+                    FrameType::ZRpos => {
+                        retries += 1;
+                        if retries > RETRY_MAX {
+                            return Err(ZError::TooManyErrors);
+                        }
+                        sizer.record_error();
+
+                        let new_pos = recover_position(&hdr.hdr);
+                        // Validate position
+                        if new_pos > file_size {
+                            return Err(ZError::FrameError(
+                                "ZRPOS beyond file size".into(),
+                            ));
+                        }
+                        position = new_pos;
+                        continue 'resync; // Iterative resync
+                    }
+                    FrameType::ZSkip => return Ok(0),
+                    _ => {
+                        retries += 1;
+                        if retries > RETRY_MAX {
+                            return Err(ZError::TooManyErrors);
+                        }
+                    }
+                },
+                Err(ZError::Timeout) => {
                     retries += 1;
                     if retries > RETRY_MAX {
                         return Err(ZError::TooManyErrors);
                     }
+                    // Resend ZEOF
+                    session.send_pos_header(FrameType::ZEof, position, out)?;
                 }
-            },
-            Err(ZError::Timeout) => {
-                retries += 1;
-                if retries > RETRY_MAX {
-                    return Err(ZError::TooManyErrors);
-                }
-                // Resend ZEOF
-                session.send_pos_header(FrameType::ZEof, position, out)?;
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
     }
 }

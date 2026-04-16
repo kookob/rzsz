@@ -27,6 +27,7 @@ fn print_usage(program_name: &str) {
     eprintln!("  -p, --protect       protect existing files (don't overwrite)");
     eprintln!("  -j, --junk-path     junk pathname (save to current dir only)");
     eprintln!("  -R, --restricted    restricted mode (no .. in paths)");
+    eprintln!("  -U, --unrestrict    disable restricted mode");
     eprintln!("  -h, --help          show this help");
     eprintln!("      --version       show version");
 }
@@ -126,6 +127,9 @@ fn main() {
             "-R" | "--restricted" => {
                 config.restricted = true;
             }
+            "-U" | "--unrestrict" => {
+                config.restricted = false;
+            }
             other if other.starts_with('-') && !other.starts_with("--") && other.len() > 2 => {
                 // Handle combined short options like -vvbe
                 let chars: Vec<char> = other[1..].chars().collect();
@@ -141,6 +145,7 @@ fn main() {
                         'p' => { config.protect = true; config.clobber = false; }
                         'j' => config.junk_path = true,
                         'R' => config.restricted = true,
+                        'U' => config.restricted = false,
                         'h' => {
                             print_usage(program_name);
                             process::exit(0);

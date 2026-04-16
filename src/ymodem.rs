@@ -12,7 +12,6 @@ use crate::zmodem::crc::update_crc16;
 
 const SOH: u8 = 0x01;
 const STX: u8 = 0x02;
-const EOT: u8 = 0x04;
 const ACK: u8 = 0x06;
 const NAK: u8 = 0x15;
 const CAN: u8 = 0x18;
@@ -46,10 +45,10 @@ pub fn ymodem_send<R: Read + AsFd, W: Write>(
 
         // Wait for ACK then C
         wait_for_byte(reader, ACK)?;
-        wait_for_byte(reader, WANTCRC)?;
+        let use_crc = wait_for_crc(reader)?;
 
-        // Send file data using XModem-1K blocks
-        let bytes = xmodem::xmodem_send(reader, out, path, true)?;
+        // Send file data using XModem-1K blocks (skip handshake)
+        let bytes = xmodem::xmodem_send_blocks(reader, out, path, true, use_crc)?;
         total_bytes += bytes;
     }
 
@@ -94,7 +93,27 @@ pub fn ymodem_receive<R: Read + AsFd, W: Write>(
             break;
         }
 
-        let file_name = String::from_utf8_lossy(&header[..nul_pos]).to_string();
+        let raw_name = String::from_utf8_lossy(&header[..nul_pos]).to_string();
+
+        // Sanitize filename: extract basename only, reject traversal attempts
+        let file_name = match Path::new(&raw_name).file_name() {
+            Some(base) => {
+                let s = base.to_string_lossy().to_string();
+                if s.is_empty() || s == ".." || s.starts_with('/') {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid filename in YModem header",
+                    ));
+                }
+                s
+            }
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid filename in YModem header",
+                ));
+            }
+        };
 
         // Parse file size (after NUL)
         let size_str_end = header[nul_pos + 1..]
@@ -111,12 +130,12 @@ pub fn ymodem_receive<R: Read + AsFd, W: Write>(
 
         let dest = output_dir.join(&file_name);
 
-        // Send 'C' to start data reception
+        // Send 'C' to start data reception (skip handshake inside xmodem)
         out.write_all(&[WANTCRC])?;
         out.flush()?;
 
-        // Receive file data
-        let bytes = xmodem::xmodem_receive(reader, out, &dest, true)?;
+        // Receive file data (skip initial C/NAK handshake)
+        let bytes = xmodem::xmodem_receive_blocks(reader, out, &dest, true)?;
 
         // Truncate to actual file size if known (remove XModem padding)
         if file_size > 0 && bytes > file_size {
@@ -222,8 +241,16 @@ fn receive_raw_block<R: Read + AsFd>(
     block_size: usize,
     use_crc: bool,
 ) -> Result<Vec<u8>, io::Error> {
-    let _sectnum = reader.read_byte(TIMEOUT_TENTHS)?;
-    let _complement = reader.read_byte(TIMEOUT_TENTHS)?;
+    let sectnum = reader.read_byte(TIMEOUT_TENTHS)?;
+    let complement = reader.read_byte(TIMEOUT_TENTHS)?;
+
+    // Validate sector number and complement
+    if sectnum.wrapping_add(complement) != 0xFF {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "block number complement mismatch",
+        ));
+    }
 
     let mut data = vec![0u8; block_size];
     for i in 0..block_size {
