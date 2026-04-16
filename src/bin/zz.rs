@@ -246,19 +246,37 @@ fn do_receive(program_name: &str, config: &ReceiverConfig) {
         exit_code = match receiver::receive_files(&mut session, &mut reader, &mut out, config) {
             Ok(ref files) => {
                 let names: Vec<String> = files.clone();
-                // Drain trailing bytes (e.g. "OO" from sender) before restoring terminal
+                // Drain trailing bytes (e.g. "OO") and flush terminal input buffer
                 for _ in 0..10 {
                     if reader.read_byte(2).is_err() { break; }
                 }
-                drop(out); drop(reader); guard.take();
+                drop(out); drop(reader);
+                // Flush any remaining input in the terminal driver
+                let _ = nix::sys::termios::tcflush(
+                    unsafe { std::os::unix::io::BorrowedFd::borrow_raw(0) },
+                    nix::sys::termios::FlushArg::TCIFLUSH,
+                );
+                guard.take();
                 if !config.quiet {
                     for f in &names { eprintln!("received: {f}"); }
                 }
                 0
             }
-            Err(rzsz::zmodem::session::ZError::Cancelled) => 0,
+            Err(rzsz::zmodem::session::ZError::Cancelled) => {
+                let _ = nix::sys::termios::tcflush(
+                    unsafe { std::os::unix::io::BorrowedFd::borrow_raw(0) },
+                    nix::sys::termios::FlushArg::TCIFLUSH,
+                );
+                0
+            }
             Err(rzsz::zmodem::session::ZError::Io(ref e))
-                if e.kind() == io::ErrorKind::BrokenPipe => 0,
+                if e.kind() == io::ErrorKind::BrokenPipe => {
+                let _ = nix::sys::termios::tcflush(
+                    unsafe { std::os::unix::io::BorrowedFd::borrow_raw(0) },
+                    nix::sys::termios::FlushArg::TCIFLUSH,
+                );
+                0
+            }
             Err(ref e) => {
                 let msg = format!("{program_name}: {e}");
                 drop(out); drop(reader); guard.take();
