@@ -91,6 +91,10 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
 ) -> Result<(), ZError> {
     let mut retries = 0u32;
 
+    // Send "rz\r" to trigger auto-start on the receiving end
+    out.write_all(b"rz\r")?;
+    out.flush()?;
+
     loop {
         // Send ZRQINIT
         session.send_pos_header(FrameType::ZrqInit, 0, out)?;
@@ -99,8 +103,9 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
             Ok(hdr) => match hdr.frame_type {
                 FrameType::ZrInit => {
                     // Parse receiver capabilities from header
-                    let rx_flags = hdr.hdr[0]; // ZF0: capabilities
-                    let rx_buflen = ((hdr.hdr[1] as u16) << 8) | hdr.hdr[2] as u16;
+                    // ZModem header layout: hdr[0]=ZF3, hdr[1]=ZF2, hdr[2]=ZF1, hdr[3]=ZF0
+                    let rx_flags = hdr.hdr[3]; // ZF0: capabilities
+                    let rx_buflen = ((hdr.hdr[0] as u16) << 8) | hdr.hdr[1] as u16;
 
                     if rx_flags & CANFC32 != 0 {
                         session.encoder.use_crc32 = true;

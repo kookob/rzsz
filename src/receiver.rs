@@ -96,22 +96,29 @@ pub fn try_zmodem<R: Read + AsFd, W: Write>(
 
     loop {
         // Send ZRINIT with our capabilities
+        // Header layout: hdr[0]=ZF3, hdr[1]=ZF2, hdr[2]=ZF1, hdr[3]=ZF0
         let mut flags = [0u8; 4];
-        flags[0] = CANFDX | CANOVIO | CANFC32; // capabilities
+        flags[3] = CANFDX | CANOVIO | CANFC32; // ZF0: capabilities
         if session.escape_all_ctrl {
-            flags[0] |= ESCCTL;
+            flags[3] |= ESCCTL;
         }
-        // ZF1: max buffer size high byte, ZF2: max buffer size low byte
+        // Buffer size in ZF3:ZF2 (big-endian within those bytes)
         let buflen = session.max_block_size as u16;
-        flags[1] = (buflen >> 8) as u8;
-        flags[2] = buflen as u8;
+        flags[0] = (buflen >> 8) as u8;  // ZF3: high byte
+        flags[1] = buflen as u8;          // ZF2: low byte
 
         session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
 
         match session.receive_header(reader) {
             Ok(hdr) => match hdr.frame_type {
                 FrameType::ZrqInit => continue, // Sender still initializing
-                FrameType::ZFile => return Ok(hdr),
+                FrameType::ZFile => {
+                    // Set CRC mode based on sender's frame encoding
+                    if hdr.encoding == FrameEncoding::Bin32 {
+                        session.encoder.use_crc32 = true;
+                    }
+                    return Ok(hdr);
+                }
                 FrameType::ZsInit => {
                     // Sender init — read attention string
                     let mut attn_buf = Vec::new();
@@ -163,9 +170,13 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
         // Wait for ZFILE
         let _zfile_hdr = try_zmodem(session, reader, out)?;
 
-        // Read file header data
+        // Read file header data (CRC mode matches the ZFILE header encoding)
         let mut header_data = Vec::new();
-        let _frame_end = session.receive_data16(reader, &mut header_data, MAX_BLOCK)?;
+        let _frame_end = if session.encoder.use_crc32 {
+            session.receive_data32(reader, &mut header_data, MAX_BLOCK)?
+        } else {
+            session.receive_data16(reader, &mut header_data, MAX_BLOCK)?
+        };
 
         let file_info = parse_file_header(&header_data)
             .ok_or_else(|| ZError::FrameError("invalid file header".into()))?;

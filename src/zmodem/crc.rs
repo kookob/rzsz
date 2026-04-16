@@ -73,9 +73,10 @@ pub const CRC32_TABLE: [u32; 256] = [
 ];
 
 /// Update CRC-16 with a single byte.
+/// Matches C macro: crctab[((crc >> 8) & 255)] ^ (crc << 8) ^ cp
 #[inline]
 pub fn update_crc16(crc: u16, byte: u8) -> u16 {
-    CRC16_TABLE[((crc >> 8) as u8 ^ byte) as usize] ^ (crc << 8)
+    CRC16_TABLE[((crc >> 8) & 0xff) as usize] ^ (crc << 8) ^ (byte as u16)
 }
 
 /// Compute CRC-16 over a byte slice (finalized with two zero bytes).
@@ -135,5 +136,38 @@ mod tests {
     #[test]
     fn test_crc32_table_length() {
         assert_eq!(CRC32_TABLE.len(), 256);
+    }
+
+
+    #[test]
+    fn test_zrinit_crc_verify() {
+        // C lrz sends ZRINIT as hex: "0100000027fed4"
+        // This means: type=0x01, hdr=[0x00,0x00,0x00,0x27], CRC=0xfed4
+        // Verify the CRC check pass: feed all bytes including CRC, result must be 0
+        let mut crc: u16 = 0;
+        for &b in &[0x01u8, 0x00, 0x00, 0x00, 0x27, 0xfe, 0xd4] {
+            crc = update_crc16(crc, b);
+        }
+        assert_eq!(crc, 0, "CRC verification should produce 0");
+    }
+
+    #[test]
+    fn test_crc16_roundtrip() {
+        // Compute CRC for type=01 hdr=[00,00,00,27], finalize, then verify
+        let mut crc: u16 = 0;
+        for &b in &[0x01u8, 0x00, 0x00, 0x00, 0x27] {
+            crc = update_crc16(crc, b);
+        }
+        let finalized = update_crc16(update_crc16(crc, 0), 0);
+        eprintln!("Finalized CRC: {:04x}", finalized);
+
+        // Now verify: feed original data + CRC bytes should give 0
+        let mut verify: u16 = 0;
+        for &b in &[0x01u8, 0x00, 0x00, 0x00, 0x27] {
+            verify = update_crc16(verify, b);
+        }
+        verify = update_crc16(verify, (finalized >> 8) as u8);
+        verify = update_crc16(verify, finalized as u8);
+        assert_eq!(verify, 0, "CRC roundtrip must verify to 0");
     }
 }

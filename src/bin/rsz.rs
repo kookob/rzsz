@@ -43,7 +43,7 @@ fn main() {
     }
 
     // Set up terminal
-    let _guard = unsafe { TerminalGuard::from_raw_fd(0) }.ok();
+    let _guard = TerminalGuard::new(0).ok();
     if let Some(ref guard) = _guard {
         let _ = guard.set_raw();
     }
