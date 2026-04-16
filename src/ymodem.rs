@@ -80,7 +80,14 @@ pub fn ymodem_receive<R: Read + AsFd, W: Write>(
         }
 
         let block_size = if first == STX { 1024 } else { 128 };
-        let header = receive_raw_block(reader, block_size, true)?;
+        let (sectnum, header) = receive_raw_block(reader, block_size, true)?;
+
+        // Validate that block 0 has sectnum == 0
+        if sectnum != 0 {
+            out.write_all(&[NAK])?;
+            out.flush()?;
+            continue;
+        }
 
         // ACK block 0
         out.write_all(&[ACK])?;
@@ -171,7 +178,12 @@ fn wait_for_crc<R: Read + AsFd>(reader: &mut ModemReader<R>) -> Result<bool, io:
             Ok(WANTCRC) => return Ok(true),
             Ok(NAK) => return Ok(false),
             Ok(CAN) => {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"))
+                // Require two consecutive CAN bytes to cancel
+                if let Ok(CAN) = reader.read_byte(TIMEOUT_TENTHS) {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                }
+                // Single CAN — ignore and keep waiting
+                continue;
             }
             _ => continue,
         }
@@ -187,7 +199,12 @@ fn wait_for_byte<R: Read + AsFd>(
         match reader.read_byte(TIMEOUT_TENTHS) {
             Ok(b) if b == expected => return Ok(()),
             Ok(CAN) => {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"))
+                // Require two consecutive CAN bytes to cancel
+                if let Ok(CAN) = reader.read_byte(TIMEOUT_TENTHS) {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                }
+                // Single CAN — ignore and keep waiting
+                continue;
             }
             _ => continue,
         }
@@ -228,7 +245,12 @@ fn send_ymodem_block<R: Read + AsFd, W: Write>(
             Ok(ACK) => return Ok(()),
             Ok(NAK) | Ok(WANTCRC) => continue,
             Ok(CAN) => {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"))
+                // Require two consecutive CAN bytes to cancel
+                if let Ok(CAN) = reader.read_byte(TIMEOUT_TENTHS) {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                }
+                // Single CAN — treat as noise, retry
+                continue;
             }
             _ => continue,
         }
@@ -240,7 +262,7 @@ fn receive_raw_block<R: Read + AsFd>(
     reader: &mut ModemReader<R>,
     block_size: usize,
     use_crc: bool,
-) -> Result<Vec<u8>, io::Error> {
+) -> Result<(u8, Vec<u8>), io::Error> {
     let sectnum = reader.read_byte(TIMEOUT_TENTHS)?;
     let complement = reader.read_byte(TIMEOUT_TENTHS)?;
 
@@ -271,5 +293,5 @@ fn receive_raw_block<R: Read + AsFd>(
         }
     }
 
-    Ok(data)
+    Ok((sectnum, data))
 }

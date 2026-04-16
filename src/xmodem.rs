@@ -227,7 +227,12 @@ fn send_block<R: Read + AsFd, W: Write>(
                 continue;
             }
             Ok(CAN) => {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                // Require two consecutive CAN bytes to cancel
+                if let Ok(CAN) = reader.read_byte(TIMEOUT_TENTHS) {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                }
+                // Single CAN — treat as noise, retry
+                continue;
             }
             _ => continue,
         }

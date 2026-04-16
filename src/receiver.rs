@@ -43,7 +43,7 @@ impl Default for ReceiverConfig {
             clobber: false,
             protect: false,
             resume: false,
-            restricted: false,
+            restricted: true,
             binary: true,
             ascii: false,
             escape_ctrl: false,
@@ -261,7 +261,9 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
                 if !file_info.name.is_empty() {
                     eprintln!("error receiving {}: {}", file_info.name, e);
                 }
-                // Try to continue with next file
+                // Drain remaining data from sender until ZEOF or timeout
+                // so we can continue with the next file.
+                drain_until_eof(session, reader);
             }
         }
     }
@@ -285,23 +287,55 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
         return Ok(0);
     }
 
+    // Rename mode: when clobber is false (and not protect), generate a unique name.
+    let path = if path.exists() && !config.clobber && !config.protect {
+        let mut candidate = path.to_path_buf();
+        for i in 1..=9999u32 {
+            candidate = PathBuf::from(format!("{}.{}", path.display(), i));
+            if !candidate.exists() {
+                break;
+            }
+        }
+        eprintln!("rename: {} -> {}", path.display(), candidate.display());
+        candidate
+    } else {
+        path.to_path_buf()
+    };
+    let path = path.as_path();
+
     // Create parent directories if needed
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(ZError::Io)?;
+        if let Err(e) = fs::create_dir_all(parent) {
+            // Notify sender to skip this file before returning error
+            let _ = session.send_pos_header(FrameType::ZSkip, 0, out);
+            return Err(ZError::Io(e));
+        }
     }
 
     let file = if start_pos > 0 {
-        OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(ZError::Io)?
+        match OpenOptions::new().write(true).open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = session.send_pos_header(FrameType::ZSkip, 0, out);
+                return Err(ZError::Io(e));
+            }
+        }
     } else {
-        File::create(path).map_err(ZError::Io)?
+        match File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = session.send_pos_header(FrameType::ZSkip, 0, out);
+                return Err(ZError::Io(e));
+            }
+        }
     };
 
     let mut writer = BufWriter::new(file);
     if start_pos > 0 {
-        writer.seek(SeekFrom::Start(start_pos)).map_err(ZError::Io)?;
+        if let Err(e) = writer.seek(SeekFrom::Start(start_pos)) {
+            let _ = session.send_pos_header(FrameType::ZSkip, 0, out);
+            return Err(ZError::Io(e));
+        }
     }
 
     let mut position = start_pos;
@@ -351,7 +385,11 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
                 session.receive_data16(reader, &mut data_buf, MAX_BLOCK)?
             };
 
-            writer.write_all(&data_buf).map_err(ZError::Io)?;
+            if let Err(e) = writer.write_all(&data_buf) {
+                // Local write failed — tell sender to skip this file
+                let _ = session.send_pos_header(FrameType::ZSkip, 0, out);
+                return Err(ZError::Io(e));
+            }
             position += data_buf.len() as u64;
             retries = 0;
 
@@ -373,6 +411,40 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
                     break;
                 }
             }
+        }
+    }
+}
+
+/// Drain frames from the sender until we see ZEOF or timeout.
+/// Used after a local I/O error so the sender's current file stream
+/// is consumed and we can proceed to the next file.
+fn drain_until_eof<R: Read + AsFd>(
+    session: &Session,
+    reader: &mut ModemReader<R>,
+) {
+    let mut data_buf = Vec::with_capacity(MAX_BLOCK);
+    // Try up to a generous number of iterations to find ZEOF
+    for _ in 0..200 {
+        match session.receive_header(reader) {
+            Ok(hdr) if hdr.frame_type == FrameType::ZEof => return,
+            Ok(hdr) if hdr.frame_type == FrameType::ZFin => return,
+            Ok(hdr) if hdr.frame_type == FrameType::ZData => {
+                // Drain the data subpackets within this ZDATA frame
+                loop {
+                    let frame_end = if session.encoder.use_crc32 {
+                        session.receive_data32(reader, &mut data_buf, MAX_BLOCK)
+                    } else {
+                        session.receive_data16(reader, &mut data_buf, MAX_BLOCK)
+                    };
+                    match frame_end {
+                        Ok(FrameEnd::CrcE) | Ok(FrameEnd::CrcW) => break,
+                        Ok(_) => continue,
+                        Err(_) => return,
+                    }
+                }
+            }
+            Ok(_) => continue,
+            Err(_) => return,
         }
     }
 }

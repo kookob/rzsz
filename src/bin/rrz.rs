@@ -54,7 +54,11 @@ fn main() {
         let stdin_fd = stdin();
         let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
         let mut out = stdout().lock();
-        match rzsz::xmodem::xmodem_receive(&mut reader, &mut out, &PathBuf::from(dest), true) {
+        let result = rzsz::xmodem::xmodem_receive(&mut reader, &mut out, &PathBuf::from(dest), true);
+        drop(out);
+        drop(reader);
+        drop(_guard);
+        match result {
             Ok(bytes) => { eprintln!("\r{dest}: {bytes} bytes received"); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
@@ -66,7 +70,11 @@ fn main() {
         let stdin_fd = stdin();
         let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
         let mut out = stdout().lock();
-        match rzsz::ymodem::ymodem_receive(&mut reader, &mut out, &PathBuf::from(".")) {
+        let result = rzsz::ymodem::ymodem_receive(&mut reader, &mut out, &PathBuf::from("."));
+        drop(out);
+        drop(reader);
+        drop(_guard);
+        match result {
             Ok(files) => { for f in &files { eprintln!("\rreceived: {f}"); } }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }

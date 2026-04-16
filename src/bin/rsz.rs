@@ -58,7 +58,11 @@ fn main() {
         let stdin_fd = stdin();
         let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
         let mut out = stdout().lock();
-        match rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(&files[0]), false) {
+        let result = rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(&files[0]), false);
+        drop(out);
+        drop(reader);
+        drop(_guard);
+        match result {
             Ok(bytes) => { eprintln!("\r{}: {} bytes sent", files[0], bytes); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
@@ -76,7 +80,11 @@ fn main() {
         let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
         let mut out = stdout().lock();
         let paths: Vec<&Path> = file_args.iter().map(|s| Path::new(s.as_str())).collect();
-        match rzsz::ymodem::ymodem_send(&mut reader, &mut out, &paths) {
+        let result = rzsz::ymodem::ymodem_send(&mut reader, &mut out, &paths);
+        drop(out);
+        drop(reader);
+        drop(_guard);
+        match result {
             Ok(bytes) => { eprintln!("\r{} bytes sent", bytes); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
@@ -186,7 +194,9 @@ fn main() {
 
         if config.escape_ctrl {
             session.escape_all_ctrl = true;
-            session.escape_table = rzsz::zmodem::escape::EscapeTable::new(true, false);
+        }
+        if config.escape_ctrl || config.turbo {
+            session.escape_table = rzsz::zmodem::escape::EscapeTable::new(config.escape_ctrl, config.turbo);
         }
 
         // Get receiver init
