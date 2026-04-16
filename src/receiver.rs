@@ -277,12 +277,11 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     _expected_size: u64,
     config: &ReceiverConfig,
 ) -> Result<u64, ZError> {
-    // Enforce protect / clobber flags before creating the file.
-    if path.exists() {
-        if config.protect || !config.clobber {
-            session.send_pos_header(FrameType::ZSkip, 0, out)?;
-            return Ok(0);
-        }
+    // Enforce protect flag: skip if file exists and --protect is set.
+    // Default behavior (no flags): overwrite, matching C lrz.
+    if path.exists() && config.protect {
+        session.send_pos_header(FrameType::ZSkip, 0, out)?;
+        return Ok(0);
     }
 
     // Create parent directories if needed
