@@ -202,19 +202,11 @@ fn main() {
                             print_usage(program_name);
                             process::exit(0);
                         }
-                        _ => {
-                            eprintln!("{}: unknown option '-{}'", program_name, ch);
-                            eprintln!("Try '{} --help' for more information.", program_name);
-                            process::exit(1);
-                        }
+                        _ => {} // silently ignore unknown short options for compat
                     }
                 }
             }
-            other if other.starts_with("--") => {
-                eprintln!("{}: unknown option '{}'", program_name, other);
-                eprintln!("Try '{} --help' for more information.", program_name);
-                process::exit(1);
-            }
+            _ if arg.starts_with("--") => {} // silently ignore unknown long options
             _ => {
                 // Not an option — it's a filename
                 files.push(arg.clone());

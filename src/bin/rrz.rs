@@ -130,8 +130,23 @@ fn main() {
             "-U" | "--unrestrict" => {
                 config.restricted = false;
             }
+            // C lrz compatibility: accept options that terminal emulators may pass
+            "-E" | "--rename" => {
+                config.clobber = false; // rename = don't clobber, closest equivalent
+            }
+            "-n" | "--newer" | "-N" | "--newer-or-longer" => {} // accept silently
+            "-c" | "--with-crc" | "-C" | "--allow-commands" => {} // accept silently
+            "-D" | "--null" | "-t" | "--timeout" | "-w" | "--windowsize"
+            | "-B" | "--bufsize" | "-O" | "--disable-timeout"
+            | "-s" | "--stop-at" | "-S" | "--timesync"
+            | "-m" | "--min-bps" | "-M" | "--min-bps-time"
+            | "--syslog" | "--syslog-facility" | "--syslog-severity"
+            | "--log-level" | "--delay-startup" => {
+                // Options that take a value — skip next arg too
+                i += 1;
+            }
             other if other.starts_with('-') && !other.starts_with("--") && other.len() > 2 => {
-                // Handle combined short options like -vvbe
+                // Handle combined short options like -vvbEe
                 let chars: Vec<char> = other[1..].chars().collect();
                 for ch in chars {
                     match ch {
@@ -146,27 +161,18 @@ fn main() {
                         'j' => config.junk_path = true,
                         'R' => config.restricted = true,
                         'U' => config.restricted = false,
+                        'E' => config.clobber = false, // rename mode
+                        'n' | 'N' | 'c' | 'C' | 'D' | 'O' | 'S' | 'u' => {} // accept silently
                         'h' => {
                             print_usage(program_name);
                             process::exit(0);
                         }
-                        _ => {
-                            eprintln!("{}: unknown option '-{}'", program_name, ch);
-                            eprintln!("Try '{} --help' for more information.", program_name);
-                            process::exit(1);
-                        }
+                        _ => {} // silently ignore unknown short options for compat
                     }
                 }
             }
-            other if other.starts_with("--") => {
-                eprintln!("{}: unknown option '{}'", program_name, other);
-                eprintln!("Try '{} --help' for more information.", program_name);
-                process::exit(1);
-            }
-            _ => {
-                // rrz doesn't take file arguments, ignore or warn
-                eprintln!("{}: warning: ignoring argument '{}'", program_name, arg);
-            }
+            _ if arg.starts_with("--") => {} // silently ignore unknown long options
+            _ => {} // silently ignore positional arguments (compat with lrz)
         }
         i += 1;
     }
