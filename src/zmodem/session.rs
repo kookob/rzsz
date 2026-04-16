@@ -103,7 +103,7 @@ impl Session {
             max_block_size: 1024,
             attn: Vec::new(),
             escape_all_ctrl: false,
-            rx_window: 1400,
+            rx_window: 8192,
         }
     }
 
@@ -339,20 +339,25 @@ impl Session {
         loop {
             let c = reader.read_byte(self.rx_timeout_tenths)?;
 
-            // Detect CAN*5 cancel sequence (terminal sends this on abort)
+            // Track consecutive CAN (0x18) bytes for cancel detection.
+            // Note: 0x18 is both CAN and ZDLE. We only treat it as cancel
+            // when we see 5+ consecutive CANs NOT preceded by ZPAD.
             if c == 0x18 {
                 can_count += 1;
                 if can_count >= 5 {
                     return Err(ZError::Cancelled);
                 }
-                garbage_count += 1;
-                continue;
+                // Don't consume — fall through to ZPAD check
+                // (0x18 is not ZPAD, so it will be counted as garbage below)
             } else {
                 can_count = 0;
             }
 
             match c {
-                ZPAD => {}
+                ZPAD => {
+                    // Reset CAN counter — valid frame start
+                    can_count = 0;
+                }
                 _ => {
                     garbage_count += 1;
                     if garbage_count > self.rx_window {
@@ -364,6 +369,8 @@ impl Session {
 
             // Got ZPAD — look for second ZPAD or ZDLE
             let c = reader.read_byte(self.rx_timeout_tenths)?;
+            // Reset CAN counter since we're in a valid frame sequence
+            can_count = 0;
             if c == ZPAD {
                 // Second ZPAD — next must be ZDLE
                 let c = reader.read_byte(self.rx_timeout_tenths)?;
