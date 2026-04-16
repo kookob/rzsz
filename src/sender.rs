@@ -16,7 +16,14 @@ const RETRY_MAX: u32 = 10;
 
 /// Sender configuration.
 pub struct SenderConfig {
-    pub verbose: bool,
+    /// Verbosity level (0 = normal, 1+ = increasingly verbose).
+    pub verbosity: u8,
+    /// Quiet mode — suppress progress output.
+    pub quiet: bool,
+    /// Force binary transfer mode.
+    pub binary: bool,
+    /// Force ASCII (text) transfer mode.
+    pub ascii: bool,
     pub full_path: bool,
     pub resume: bool,
     pub escape_ctrl: bool,
@@ -28,7 +35,10 @@ pub struct SenderConfig {
 impl Default for SenderConfig {
     fn default() -> Self {
         Self {
-            verbose: false,
+            verbosity: 0,
+            quiet: false,
+            binary: true,
+            ascii: false,
             full_path: false,
             resume: false,
             escape_ctrl: false,
@@ -36,6 +46,13 @@ impl Default for SenderConfig {
             max_block: 1024,
             window_size: 0,
         }
+    }
+}
+
+impl SenderConfig {
+    /// Returns true if verbose output should be shown (verbosity >= 1 and not quiet).
+    pub fn is_verbose(&self) -> bool {
+        self.verbosity > 0 && !self.quiet
     }
 }
 
@@ -366,24 +383,48 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     }
 }
 
-/// Send ZFIN to end the session.
+/// Send empty ZFILE (batch end marker) then ZFIN to end the session.
 pub fn finish_session<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
     out: &mut W,
 ) -> Result<(), ZError> {
-    session.send_pos_header(FrameType::ZFin, 0, out)?;
+    // Send empty filename ZFILE to signal end of batch
+    let hdr = [0u8; 4];
+    let escape = session.escape_table.clone();
+    let _ = session
+        .encoder
+        .send_binary_header(FrameType::ZFile, &hdr, 0, &escape, out);
+    let _ = session
+        .encoder
+        .send_data(&[0u8], FrameEnd::CrcW, &escape, out);
 
-    for _ in 0..5 {
+    // Use short timeout for session end
+    let saved_timeout = session.rx_timeout_tenths;
+    session.rx_timeout_tenths = 20; // 2 seconds
+
+    // Wait briefly for receiver response
+    for _ in 0..2 {
         match session.receive_header(reader) {
-            Ok(hdr) if hdr.frame_type == FrameType::ZFin => {
-                // Send Over-and-Out
-                out.write_all(b"OO")?;
-                out.flush()?;
-                return Ok(());
-            }
-            _ => continue,
+            Ok(hdr) if hdr.frame_type == FrameType::ZrInit => break,
+            _ => break,
         }
     }
+
+    // Send ZFIN
+    session.send_pos_header(FrameType::ZFin, 0, out)?;
+
+    for _ in 0..3 {
+        match session.receive_header(reader) {
+            Ok(hdr) if hdr.frame_type == FrameType::ZFin => {
+                out.write_all(b"OO")?;
+                out.flush()?;
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    session.rx_timeout_tenths = saved_timeout;
     Ok(())
 }

@@ -15,11 +15,22 @@ const RETRY_MAX: u32 = 20;
 
 /// Receiver configuration.
 pub struct ReceiverConfig {
-    pub verbose: bool,
+    /// Verbosity level (0 = normal, 1+ = increasingly verbose).
+    pub verbosity: u8,
+    /// Quiet mode — suppress progress output.
+    pub quiet: bool,
+    /// Overwrite existing files (lrz -y).
     pub clobber: bool,
+    /// Protect existing files — never overwrite (lrz -p). Overrides clobber.
+    pub protect: bool,
     pub resume: bool,
     pub restricted: bool,
+    /// Force binary receive mode.
     pub binary: bool,
+    /// Force ASCII (text) receive mode.
+    pub ascii: bool,
+    /// Escape all control characters.
+    pub escape_ctrl: bool,
     pub junk_path: bool,
     pub output_dir: PathBuf,
 }
@@ -27,14 +38,25 @@ pub struct ReceiverConfig {
 impl Default for ReceiverConfig {
     fn default() -> Self {
         Self {
-            verbose: false,
+            verbosity: 0,
+            quiet: false,
             clobber: false,
+            protect: false,
             resume: false,
             restricted: true,
             binary: true,
+            ascii: false,
+            escape_ctrl: false,
             junk_path: false,
             output_dir: PathBuf::from("."),
         }
+    }
+}
+
+impl ReceiverConfig {
+    /// Returns true if verbose output should be shown (verbosity >= 1 and not quiet).
+    pub fn is_verbose(&self) -> bool {
+        self.verbosity > 0 && !self.quiet
     }
 }
 
