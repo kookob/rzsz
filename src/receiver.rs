@@ -280,6 +280,7 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     // Enforce protect flag: skip if file exists and --protect is set.
     // Default behavior (no flags): overwrite, matching C lrz.
     if path.exists() && config.protect {
+        eprintln!("skipped (already exists): {}", path.display());
         session.send_pos_header(FrameType::ZSkip, 0, out)?;
         return Ok(0);
     }

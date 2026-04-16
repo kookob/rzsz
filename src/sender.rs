@@ -433,48 +433,38 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     }
 }
 
-/// Send empty ZFILE (batch end marker) then ZFIN to end the session.
+/// End the ZModem session with proper ZFIN handshake.
 pub fn finish_session<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
     out: &mut W,
 ) -> Result<(), ZError> {
-    // Send empty filename ZFILE to signal end of batch
-    let hdr = [0u8; 4];
-    let escape = session.escape_table.clone();
-    let _ = session
-        .encoder
-        .send_binary_header(FrameType::ZFile, &hdr, 0, &escape, out);
-    let _ = session
-        .encoder
-        .send_data(&[0u8], FrameEnd::CrcW, &escape, out);
-
-    // Use short timeout for session end
     let saved_timeout = session.rx_timeout_tenths;
-    session.rx_timeout_tenths = 20; // 2 seconds
+    session.rx_timeout_tenths = 30; // 3 seconds for end handshake
 
-    // Wait briefly for receiver response
-    for _ in 0..2 {
-        match session.receive_header(reader) {
-            Ok(hdr) if hdr.frame_type == FrameType::ZrInit => break,
-            _ => break,
-        }
-    }
+    // Send ZFIN, retry a few times
+    for _ in 0..4 {
+        session.send_pos_header(FrameType::ZFin, 0, out)?;
 
-    // Send ZFIN
-    session.send_pos_header(FrameType::ZFin, 0, out)?;
-
-    for _ in 0..3 {
         match session.receive_header(reader) {
             Ok(hdr) if hdr.frame_type == FrameType::ZFin => {
+                // Receiver acknowledged — send Over-and-Out
                 out.write_all(b"OO")?;
                 out.flush()?;
-                break;
+                session.rx_timeout_tenths = saved_timeout;
+                return Ok(());
             }
-            _ => break,
+            Ok(hdr) if hdr.frame_type == FrameType::ZrInit => {
+                // Receiver wants another file — send ZFIN again
+                continue;
+            }
+            _ => continue,
         }
     }
 
+    // Last resort: just send OO and exit
+    out.write_all(b"OO")?;
+    out.flush()?;
     session.rx_timeout_tenths = saved_timeout;
     Ok(())
 }
