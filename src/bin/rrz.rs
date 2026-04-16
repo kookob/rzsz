@@ -122,12 +122,12 @@ fn main() {
                 config.resume = true;
             }
             "-y" | "--overwrite" => {
-                config.clobber = true;
+                config.protect = false; config.rename = false;
                 config.protect = false;
             }
             "-p" | "--protect" => {
                 config.protect = true;
-                config.clobber = false;
+                config.rename = true;
             }
             "-j" | "--junk-path" => {
                 config.junk_path = true;
@@ -140,7 +140,7 @@ fn main() {
             }
             // C lrz compatibility: accept options that terminal emulators may pass
             "-E" | "--rename" => {
-                config.clobber = false; // rename = don't clobber, closest equivalent
+                config.rename = true; // rename = don't clobber, closest equivalent
             }
             "-n" | "--newer" | "-N" | "--newer-or-longer" => {} // accept silently
             "-c" | "--with-crc" | "-C" | "--allow-commands" => {} // accept silently
@@ -164,12 +164,12 @@ fn main() {
                         'a' => { config.ascii = true; config.binary = false; }
                         'e' => config.escape_ctrl = true,
                         'r' => config.resume = true,
-                        'y' => { config.clobber = true; config.protect = false; }
-                        'p' => { config.protect = true; config.clobber = false; }
+                        'y' => { config.protect = false; config.rename = false; config.protect = false; }
+                        'p' => { config.protect = true; config.rename = true; }
                         'j' => config.junk_path = true,
                         'R' => config.restricted = true,
                         'U' => config.restricted = false,
-                        'E' => config.clobber = false, // rename mode
+                        'E' => config.rename = true, // rename mode
                         'n' | 'N' | 'c' | 'C' | 'D' | 'O' | 'S' | 'u' => {} // accept silently
                         'h' => {
                             print_usage(program_name);

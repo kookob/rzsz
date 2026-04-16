@@ -106,12 +106,12 @@ fn main() {
             "-k" | "--1024" => { send_cfg.max_block = 1024; }
             "-8" | "--try-8k" => { send_cfg.max_block = 8192; }
             // Receive-specific
-            "-y" | "--overwrite" => { recv_cfg.clobber = true; recv_cfg.protect = false; }
-            "-p" | "--protect" => { recv_cfg.protect = true; recv_cfg.clobber = false; }
+            "-y" | "--overwrite" => { recv_cfg.protect = false; recv_cfg.rename = false; }
+            "-p" | "--protect" => { recv_cfg.protect = true; recv_cfg.rename = false; }
             "-j" | "--junk-path" => { recv_cfg.junk_path = true; }
             "-R" | "--restricted" => { recv_cfg.restricted = true; }
             "-U" | "--unrestrict" => { recv_cfg.restricted = false; }
-            "-E" | "--rename" => { recv_cfg.clobber = false; }
+            "-E" | "--rename" => { recv_cfg.rename = true; }
             // Combined short options
             other if other.starts_with('-') && !other.starts_with("--") && other.len() > 2 => {
                 for ch in other[1..].chars() {
@@ -126,12 +126,12 @@ fn main() {
                         'T' => send_cfg.turbo = true,
                         'k' => send_cfg.max_block = 1024,
                         '8' => send_cfg.max_block = 8192,
-                        'y' => { recv_cfg.clobber = true; recv_cfg.protect = false; }
-                        'p' => { recv_cfg.protect = true; recv_cfg.clobber = false; }
+                        'y' => { recv_cfg.protect = false; recv_cfg.rename = false; }
+                        'p' => { recv_cfg.protect = true; recv_cfg.rename = false; }
                         'j' => recv_cfg.junk_path = true,
                         'R' => recv_cfg.restricted = true,
                         'U' => recv_cfg.restricted = false,
-                        'E' => recv_cfg.clobber = false,
+                        'E' => recv_cfg.rename = true,
                         'h' => { print_usage(program_name); process::exit(0); }
                         _ => {} // silently ignore for compat
                     }
@@ -246,6 +246,10 @@ fn do_receive(program_name: &str, config: &ReceiverConfig) {
         exit_code = match receiver::receive_files(&mut session, &mut reader, &mut out, config) {
             Ok(ref files) => {
                 let names: Vec<String> = files.clone();
+                // Drain trailing bytes (e.g. "OO" from sender) before restoring terminal
+                for _ in 0..10 {
+                    if reader.read_byte(2).is_err() { break; }
+                }
                 drop(out); drop(reader); guard.take();
                 if !config.quiet {
                     for f in &names { eprintln!("received: {f}"); }

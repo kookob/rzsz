@@ -19,10 +19,10 @@ pub struct ReceiverConfig {
     pub verbosity: u8,
     /// Quiet mode — suppress progress output.
     pub quiet: bool,
-    /// Overwrite existing files (lrz -y).
-    pub clobber: bool,
-    /// Protect existing files — never overwrite (lrz -p). Overrides clobber.
+    /// Protect existing files — never overwrite (lrz -p).
     pub protect: bool,
+    /// Rename mode (-E): if file exists, generate unique name (.1, .2, etc.)
+    pub rename: bool,
     pub resume: bool,
     pub restricted: bool,
     /// Force binary receive mode.
@@ -40,8 +40,8 @@ impl Default for ReceiverConfig {
         Self {
             verbosity: 0,
             quiet: false,
-            clobber: false,
             protect: false,
+            rename: false,
             resume: false,
             restricted: true,
             binary: true,
@@ -279,16 +279,15 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     _expected_size: u64,
     config: &ReceiverConfig,
 ) -> Result<u64, ZError> {
-    // Enforce protect flag: skip if file exists and --protect is set.
-    // Default behavior (no flags): overwrite, matching C lrz.
+    // --protect: skip if file exists
     if path.exists() && config.protect {
         eprintln!("skipped (already exists): {}", path.display());
         session.send_pos_header(FrameType::ZSkip, 0, out)?;
         return Ok(0);
     }
 
-    // Rename mode: when clobber is false (and not protect), generate a unique name.
-    let path = if path.exists() && !config.clobber && !config.protect {
+    // --rename (-E): generate unique name if file exists
+    let path = if path.exists() && config.rename {
         let mut candidate = path.to_path_buf();
         for i in 1..=9999u32 {
             candidate = PathBuf::from(format!("{}.{}", path.display(), i));
@@ -302,6 +301,8 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
         path.to_path_buf()
     };
     let path = path.as_path();
+
+    // Default: overwrite existing file (matching C lrz behavior)
 
     // Create parent directories if needed
     if let Some(parent) = path.parent() {
