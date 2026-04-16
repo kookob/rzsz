@@ -236,20 +236,31 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
             0
         };
 
+        // Skip if path resolves to a directory (e.g. empty filename edge case)
+        if file_path.is_dir() {
+            session.send_pos_header(FrameType::ZSkip, 0, out)?;
+            continue;
+        }
+
         // Tell sender where to start
         session.send_pos_header(FrameType::ZRpos, start_pos, out)?;
 
         // Receive file data
         match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size, config) {
             Ok(bytes) => {
-                eprintln!(
-                    "{}: {} bytes received",
-                    file_info.name, bytes
-                );
+                if bytes > 0 {
+                    eprintln!("{}: {} bytes received", file_info.name, bytes);
+                }
                 received_files.push(file_info.name);
             }
+            Err(ZError::Io(ref e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                // Pipe closed — session ending, not a real error
+                break Ok(received_files);
+            }
             Err(e) => {
-                eprintln!("error receiving {}: {}", file_info.name, e);
+                if !file_info.name.is_empty() {
+                    eprintln!("error receiving {}: {}", file_info.name, e);
+                }
                 // Try to continue with next file
             }
         }

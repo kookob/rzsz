@@ -199,6 +199,10 @@ fn main() {
         Err(rzsz::zmodem::session::ZError::Cancelled) => {
             // Normal end of session
         }
+        Err(rzsz::zmodem::session::ZError::Io(ref e))
+            if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // Pipe closed at session end — normal
+        }
         Err(e) => {
             eprintln!("\r{program_name}: {e}");
             process::exit(1);
