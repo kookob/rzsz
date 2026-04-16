@@ -171,41 +171,56 @@ fn main() {
         i += 1;
     }
 
-    // Set up terminal
-    let _guard = TerminalGuard::new(0).ok();
-    if let Some(ref guard) = _guard {
-        let _ = guard.set_raw();
+    // Set up terminal — must be restored before exit
+    let mut guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard {
+        let _ = g.set_raw();
     }
 
-    let stdin_fd = stdin();
-    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
-    let mut out = stdout().lock();
-    let mut session = Session::new();
+    let exit_code;
+    {
+        let stdin_fd = stdin();
+        let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        let mut session = Session::new();
 
-    // Apply escape option to session
-    if config.escape_ctrl {
-        session.escape_all_ctrl = true;
-        session.escape_table = rzsz::zmodem::escape::EscapeTable::new(true, false);
-    }
+        if config.escape_ctrl {
+            session.escape_all_ctrl = true;
+            session.escape_table = rzsz::zmodem::escape::EscapeTable::new(true, false);
+        }
 
-    match receiver::receive_files(&mut session, &mut reader, &mut out, &config) {
-        Ok(files) => {
-            if !config.quiet {
-                for f in &files {
-                    eprintln!("\rreceived: {f}");
+        exit_code = match receiver::receive_files(&mut session, &mut reader, &mut out, &config) {
+            Ok(ref files) => {
+                // Store file list, will print after terminal restore
+                let names: Vec<String> = files.clone();
+                drop(out);
+                drop(reader);
+                // Restore terminal before printing
+                guard.take();
+                if !config.quiet {
+                    for f in &names {
+                        eprintln!("received: {f}");
+                    }
                 }
+                0
             }
-        }
-        Err(rzsz::zmodem::session::ZError::Cancelled) => {
-            // Normal end of session
-        }
-        Err(rzsz::zmodem::session::ZError::Io(ref e))
-            if e.kind() == std::io::ErrorKind::BrokenPipe => {
-            // Pipe closed at session end — normal
-        }
-        Err(e) => {
-            eprintln!("\r{program_name}: {e}");
-            process::exit(1);
-        }
+            Err(rzsz::zmodem::session::ZError::Cancelled) => 0,
+            Err(rzsz::zmodem::session::ZError::Io(ref e))
+                if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+            Err(ref e) => {
+                let msg = format!("{program_name}: {e}");
+                drop(out);
+                drop(reader);
+                guard.take();
+                eprintln!("{msg}");
+                1
+            }
+        };
+    }
+
+    // Ensure terminal is restored (guard may already be dropped via .take())
+    drop(guard);
+    if exit_code != 0 {
+        process::exit(exit_code);
     }
 }

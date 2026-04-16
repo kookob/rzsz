@@ -180,62 +180,68 @@ fn main() {
         process::exit(1);
     }
 
-    // Set up terminal
-    let _guard = TerminalGuard::new(0).ok();
-    if let Some(ref guard) = _guard {
-        let _ = guard.set_raw();
+    // Set up terminal — guard must be dropped before exit to restore terminal
+    let guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard {
+        let _ = g.set_raw();
     }
 
-    // Set stderr unbuffered (already is by default in Rust)
-    let stdin_fd = stdin();
-    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
-    let mut out = stdout().lock();
-    let mut session = Session::new();
+    let exit_code = {
+        let stdin_fd = stdin();
+        let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        let mut session = Session::new();
 
-    // Apply escape option to session
-    if config.escape_ctrl {
-        session.escape_all_ctrl = true;
-        session.escape_table = rzsz::zmodem::escape::EscapeTable::new(true, false);
-    }
+        if config.escape_ctrl {
+            session.escape_all_ctrl = true;
+            session.escape_table = rzsz::zmodem::escape::EscapeTable::new(true, false);
+        }
 
-    // Get receiver init
-    if let Err(e) = sender::get_receiver_init(&mut session, &mut reader, &mut out) {
-        eprintln!("\r{program_name}: {e}");
-        process::exit(1);
-    }
+        // Get receiver init
+        if let Err(e) = sender::get_receiver_init(&mut session, &mut reader, &mut out) {
+            drop(out);
+            drop(reader);
+            drop(guard); // Restore terminal BEFORE printing error
+            eprintln!("{program_name}: {e}");
+            process::exit(1);
+        }
 
-    // Compute batch totals
-    let total_size: u64 = files
-        .iter()
-        .filter_map(|f| std::fs::metadata(f).ok())
-        .map(|m| m.len())
-        .sum();
+        // Compute batch totals
+        let total_size: u64 = files
+            .iter()
+            .filter_map(|f| std::fs::metadata(f).ok())
+            .map(|m| m.len())
+            .sum();
 
-    // Send each file
-    let mut errors = 0;
-    let mut bytes_left = total_size;
-    for (idx, file_path) in files.iter().enumerate() {
-        let files_left = files.len() - idx;
-        let path = Path::new(file_path);
-        match sender::send_file(
-            &mut session, &mut reader, &mut out, path, &config,
-            files_left, bytes_left,
-        ) {
-            Ok(bytes) => {
-                if bytes > 0 && !config.quiet {
-                    eprintln!("\r{}: {} bytes sent", file_path, bytes);
+        // Send each file
+        let mut errors = 0;
+        let mut bytes_left = total_size;
+        for (idx, file_path) in files.iter().enumerate() {
+            let files_left = files.len() - idx;
+            let path = Path::new(file_path);
+            match sender::send_file(
+                &mut session, &mut reader, &mut out, path, &config,
+                files_left, bytes_left,
+            ) {
+                Ok(bytes) => {
+                    if bytes > 0 && !config.quiet {
+                        eprintln!("\r{}: {} bytes sent", file_path, bytes);
+                    }
+                    bytes_left = bytes_left.saturating_sub(bytes);
                 }
-                bytes_left = bytes_left.saturating_sub(bytes);
-            }
-            Err(e) => {
-                eprintln!("\r{program_name}: {file_path}: {e}");
-                errors += 1;
+                Err(e) => {
+                    eprintln!("\r{program_name}: {file_path}: {e}");
+                    errors += 1;
+                }
             }
         }
-    }
 
-    // Finish session
-    let _ = sender::finish_session(&mut session, &mut reader, &mut out);
+        let _ = sender::finish_session(&mut session, &mut reader, &mut out);
 
-    process::exit(if errors > 0 { 1 } else { 0 });
+        if errors > 0 { 1 } else { 0 }
+    };
+
+    // Guard drops here — terminal restored before exit
+    drop(guard);
+    process::exit(exit_code);
 }
