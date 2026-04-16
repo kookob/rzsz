@@ -186,18 +186,21 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
 }
 
 /// Build the ZFILE data subpacket: filename + metadata.
-/// `files_left` and `total_left` are batch counters for multi-file transfers.
+/// `remote_name` overrides the filename sent to receiver (for directory transfers).
 fn build_file_header(
     path: &Path,
     metadata: &fs::Metadata,
     full_path: bool,
+    remote_name: Option<&str>,
     files_left: usize,
     total_bytes_left: u64,
 ) -> Vec<u8> {
     let mut buf = vec![0u8; MAX_BLOCK];
 
-    // Filename (without path unless full_path)
-    let name = if full_path {
+    // Filename: use remote_name if provided, else full path or basename
+    let name = if let Some(rname) = remote_name {
+        rname.to_string()
+    } else if full_path {
         path.to_string_lossy().to_string()
     } else {
         path.file_name()
@@ -242,7 +245,7 @@ fn build_file_header(
 }
 
 /// Send a single file via ZModem.
-/// `files_left` and `total_bytes_left` are batch counters (1-based).
+/// `remote_name` optionally overrides the filename sent to receiver.
 pub fn send_file<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
@@ -251,6 +254,7 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     config: &SenderConfig,
     files_left: usize,
     total_bytes_left: u64,
+    remote_name: Option<&str>,
 ) -> Result<u64, ZError> {
     let metadata = fs::metadata(path).map_err(|e| ZError::Io(e))?;
     if metadata.is_dir() {
@@ -258,8 +262,9 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     }
 
     let file_size = metadata.len();
-    let file_header =
-        build_file_header(path, &metadata, config.full_path, files_left, total_bytes_left);
+    let file_header = build_file_header(
+        path, &metadata, config.full_path, remote_name, files_left, total_bytes_left,
+    );
 
     // Send ZFILE header
     let hdr = [0u8; 4]; // ZF0-ZF3 (basic file options)

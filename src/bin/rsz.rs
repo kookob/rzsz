@@ -3,8 +3,56 @@
 
 use std::env;
 use std::io::{stdin, stdout};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
+
+/// A file to send: local_path is the actual file, remote_name is sent to receiver.
+struct SendEntry {
+    local_path: String,
+    remote_name: Option<String>, // None = use basename
+}
+
+/// Expand a list of paths: directories are recursively walked, files kept as-is.
+fn expand_paths(args: &[String]) -> Vec<SendEntry> {
+    let mut result = Vec::new();
+    for arg in args {
+        let path = Path::new(arg);
+        if path.is_dir() {
+            let base = path.parent().unwrap_or(Path::new(""));
+            walk_dir(base, path, &mut result);
+        } else {
+            result.push(SendEntry {
+                local_path: arg.clone(),
+                remote_name: None,
+            });
+        }
+    }
+    result
+}
+
+fn walk_dir(base: &Path, dir: &Path, out: &mut Vec<SendEntry>) {
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(e) => e.flatten().collect(),
+        Err(e) => {
+            eprintln!("warning: cannot read directory {}: {}", dir.display(), e);
+            return;
+        }
+    };
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_dir(base, &path, out);
+        } else if path.is_file() {
+            // Compute relative path from base: /tmp/foo/mydir/sub/a.txt -> mydir/sub/a.txt
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            out.push(SendEntry {
+                local_path: path.to_string_lossy().to_string(),
+                remote_name: Some(rel.to_string_lossy().to_string()),
+            });
+        }
+    }
+}
 
 use rzsz::serial::reader::ModemReader;
 use rzsz::serial::terminal::TerminalGuard;
@@ -180,6 +228,13 @@ fn main() {
         process::exit(1);
     }
 
+    // Expand directories recursively
+    let entries = expand_paths(&files);
+    if entries.is_empty() {
+        eprintln!("{program_name}: no files to send (directories were empty)");
+        process::exit(1);
+    }
+
     // Set up terminal — guard must be dropped before exit to restore terminal
     let guard = TerminalGuard::new(0).ok();
     if let Some(ref g) = guard {
@@ -207,30 +262,35 @@ fn main() {
         }
 
         // Compute batch totals
-        let total_size: u64 = files
+        let total_size: u64 = entries
             .iter()
-            .filter_map(|f| std::fs::metadata(f).ok())
+            .filter_map(|e| std::fs::metadata(&e.local_path).ok())
             .map(|m| m.len())
             .sum();
 
         // Send each file
         let mut errors = 0;
         let mut bytes_left = total_size;
-        for (idx, file_path) in files.iter().enumerate() {
-            let files_left = files.len() - idx;
-            let path = Path::new(file_path);
+        if !config.quiet && entries.len() > 1 {
+            eprintln!("\r{program_name}: sending {} files", entries.len());
+        }
+        for (idx, entry) in entries.iter().enumerate() {
+            let files_left = entries.len() - idx;
+            let path = Path::new(&entry.local_path);
+            let display_name = entry.remote_name.as_deref()
+                .unwrap_or(&entry.local_path);
             match sender::send_file(
                 &mut session, &mut reader, &mut out, path, &config,
-                files_left, bytes_left,
+                files_left, bytes_left, entry.remote_name.as_deref(),
             ) {
                 Ok(bytes) => {
                     if bytes > 0 && !config.quiet {
-                        eprintln!("\r{}: {} bytes sent", file_path, bytes);
+                        eprintln!("\r{}: {} bytes sent", display_name, bytes);
                     }
                     bytes_left = bytes_left.saturating_sub(bytes);
                 }
                 Err(e) => {
-                    eprintln!("\r{program_name}: {file_path}: {e}");
+                    eprintln!("\r{program_name}: {display_name}: {e}");
                     errors += 1;
                 }
             }
