@@ -4,6 +4,7 @@ use super::frame::ZDLE;
 /// - 0: send as-is
 /// - 1: must escape (ZDLE + byte ^ 0x40)
 /// - 2: escape only if previous byte was '@' (Telenet escape prevention)
+#[derive(Clone)]
 pub struct EscapeTable {
     table: [u8; 256],
 }
