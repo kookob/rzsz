@@ -45,9 +45,31 @@ fn main() {
         _ => "zmodem",
     };
 
-    if protocol != "zmodem" {
-        eprintln!("{program_name}: {protocol} not yet implemented");
-        process::exit(1);
+    if protocol == "xmodem" {
+        // XModem receive: needs a destination filename argument
+        let dest = args.get(1).map(|s| s.as_str()).unwrap_or("xmodem.out");
+        let _guard = TerminalGuard::new(0).ok();
+        if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
+        let stdin_fd = stdin();
+        let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        match rzsz::xmodem::xmodem_receive(&mut reader, &mut out, &PathBuf::from(dest), true) {
+            Ok(bytes) => { eprintln!("\r{dest}: {bytes} bytes received"); }
+            Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+        }
+        process::exit(0);
+    }
+    if protocol == "ymodem" {
+        let _guard = TerminalGuard::new(0).ok();
+        if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
+        let stdin_fd = stdin();
+        let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        match rzsz::ymodem::ymodem_receive(&mut reader, &mut out, &PathBuf::from(".")) {
+            Ok(files) => { for f in &files { eprintln!("\rreceived: {f}"); } }
+            Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+        }
+        process::exit(0);
     }
 
     // Parse command-line options

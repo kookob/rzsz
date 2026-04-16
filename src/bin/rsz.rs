@@ -45,9 +45,42 @@ fn main() {
         _ => "zmodem",
     };
 
-    if protocol != "zmodem" {
-        eprintln!("{program_name}: {protocol} not yet implemented");
-        process::exit(1);
+    // XModem and YModem paths
+    if protocol == "xmodem" {
+        // Parse args, get first file
+        let files: Vec<String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).cloned().collect();
+        if files.is_empty() {
+            eprintln!("usage: {program_name} file");
+            process::exit(1);
+        }
+        let _guard = TerminalGuard::new(0).ok();
+        if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
+        let stdin_fd = stdin();
+        let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        match rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(&files[0]), false) {
+            Ok(bytes) => { eprintln!("\r{}: {} bytes sent", files[0], bytes); }
+            Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+        }
+        process::exit(0);
+    }
+    if protocol == "ymodem" {
+        let file_args: Vec<String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).cloned().collect();
+        if file_args.is_empty() {
+            eprintln!("usage: {program_name} file...");
+            process::exit(1);
+        }
+        let _guard = TerminalGuard::new(0).ok();
+        if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
+        let stdin_fd = stdin();
+        let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
+        let mut out = stdout().lock();
+        let paths: Vec<&Path> = file_args.iter().map(|s| Path::new(s.as_str())).collect();
+        match rzsz::ymodem::ymodem_send(&mut reader, &mut out, &paths) {
+            Ok(bytes) => { eprintln!("\r{} bytes sent", bytes); }
+            Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+        }
+        process::exit(0);
     }
 
     // Parse command-line options
@@ -171,15 +204,28 @@ fn main() {
         process::exit(1);
     }
 
+    // Compute batch totals
+    let total_size: u64 = files
+        .iter()
+        .filter_map(|f| std::fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum();
+
     // Send each file
     let mut errors = 0;
-    for file_path in &files {
+    let mut bytes_left = total_size;
+    for (idx, file_path) in files.iter().enumerate() {
+        let files_left = files.len() - idx;
         let path = Path::new(file_path);
-        match sender::send_file(&mut session, &mut reader, &mut out, path, &config) {
+        match sender::send_file(
+            &mut session, &mut reader, &mut out, path, &config,
+            files_left, bytes_left,
+        ) {
             Ok(bytes) => {
                 if bytes > 0 && !config.quiet {
                     eprintln!("\r{}: {} bytes sent", file_path, bytes);
                 }
+                bytes_left = bytes_left.saturating_sub(bytes);
             }
             Err(e) => {
                 eprintln!("\r{program_name}: {file_path}: {e}");

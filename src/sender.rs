@@ -168,7 +168,14 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
 }
 
 /// Build the ZFILE data subpacket: filename + metadata.
-fn build_file_header(path: &Path, metadata: &fs::Metadata, full_path: bool) -> Vec<u8> {
+/// `files_left` and `total_left` are batch counters for multi-file transfers.
+fn build_file_header(
+    path: &Path,
+    metadata: &fs::Metadata,
+    full_path: bool,
+    files_left: usize,
+    total_bytes_left: u64,
+) -> Vec<u8> {
     let mut buf = vec![0u8; MAX_BLOCK];
 
     // Filename (without path unless full_path)
@@ -201,7 +208,10 @@ fn build_file_header(path: &Path, metadata: &fs::Metadata, full_path: bool) -> V
         metadata.mode()
     };
 
-    let meta_str = format!("{} {:o} {:o} 0 1 {}", size, mtime, mode, size);
+    let meta_str = format!(
+        "{} {:o} {:o} 0 {} {}",
+        size, mtime, mode, files_left, total_bytes_left
+    );
     let meta_start = name_len + 1;
     let meta_bytes = meta_str.as_bytes();
     let meta_len = meta_bytes.len().min(buf.len() - meta_start);
@@ -214,12 +224,15 @@ fn build_file_header(path: &Path, metadata: &fs::Metadata, full_path: bool) -> V
 }
 
 /// Send a single file via ZModem.
+/// `files_left` and `total_bytes_left` are batch counters (1-based).
 pub fn send_file<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
     out: &mut W,
     path: &Path,
     config: &SenderConfig,
+    files_left: usize,
+    total_bytes_left: u64,
 ) -> Result<u64, ZError> {
     let metadata = fs::metadata(path).map_err(|e| ZError::Io(e))?;
     if metadata.is_dir() {
@@ -227,7 +240,8 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     }
 
     let file_size = metadata.len();
-    let file_header = build_file_header(path, &metadata, config.full_path);
+    let file_header =
+        build_file_header(path, &metadata, config.full_path, files_left, total_bytes_left);
 
     // Send ZFILE header
     let hdr = [0u8; 4]; // ZF0-ZF3 (basic file options)
