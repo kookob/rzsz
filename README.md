@@ -26,7 +26,7 @@ cargo install rzsz
 
 ### Install from binary
 
-Download from [Releases](https://github.com/nicholasching/rzsz/releases), then:
+Download from [Releases](https://github.com/kookob/rzsz/releases), then:
 
 ```bash
 tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/
@@ -104,7 +104,7 @@ zz --help             # Show all options
 ## Building from Source
 
 ```bash
-git clone https://github.com/nicholasching/rzsz.git
+git clone https://github.com/kookob/rzsz.git
 cd rzsz
 
 # Development build
@@ -184,7 +184,7 @@ cargo install rzsz
 
 ### 从二进制安装
 
-从 [Releases](https://github.com/nicholasching/rzsz/releases) 下载，然后：
+从 [Releases](https://github.com/kookob/rzsz/releases) 下载，然后：
 
 ```bash
 tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/
@@ -236,7 +236,7 @@ zz --help             # 查看所有选项
 ## 从源码构建
 
 ```bash
-git clone https://github.com/nicholasching/rzsz.git
+git clone https://github.com/kookob/rzsz.git
 cd rzsz
 cargo build --release
 

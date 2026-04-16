@@ -97,11 +97,11 @@ ln -s ~/.cargo/bin/zz ~/.cargo/bin/sz
 
 ```bash
 # x86_64
-curl -LO https://github.com/nicholasching/rzsz/releases/latest/download/zz-linux-x86_64-musl.tar.gz
+curl -LO https://github.com/kookob/rzsz/releases/latest/download/zz-linux-x86_64-musl.tar.gz
 sudo tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/
 
 # ARM64
-curl -LO https://github.com/nicholasching/rzsz/releases/latest/download/zz-linux-aarch64-musl.tar.gz
+curl -LO https://github.com/kookob/rzsz/releases/latest/download/zz-linux-aarch64-musl.tar.gz
 sudo tar xzf zz-linux-aarch64-musl.tar.gz -C /usr/local/bin/
 ```
 
