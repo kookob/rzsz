@@ -2,8 +2,14 @@
 name = "rzsz"
 version = "0.1.0"
 edition = "2021"
-description = "X/Y/ZModem file transfer tool — a modern Rust rewrite of lrzsz"
+description = "X/Y/ZModem file transfer tool — a modern Rust rewrite of lrzsz. Single binary, drop-in rz/sz replacement."
 license = "GPL-2.0-or-later"
+repository = "https://github.com/nicholasching/rzsz"
+homepage = "https://github.com/nicholasching/rzsz"
+readme = "README.md"
+keywords = ["zmodem", "xmodem", "ymodem", "file-transfer", "terminal"]
+categories = ["command-line-utilities", "network-programming"]
+exclude = ["tests/", ".github/", "SUMMARY.md"]
 
 [[bin]]
 name = "zz"
