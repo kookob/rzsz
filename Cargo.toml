@@ -6,14 +6,6 @@ description = "X/Y/ZModem file transfer tool — a modern Rust rewrite of lrzsz"
 license = "GPL-2.0-or-later"
 
 [[bin]]
-name = "rsz"
-path = "src/bin/rsz.rs"
-
-[[bin]]
-name = "rrz"
-path = "src/bin/rrz.rs"
-
-[[bin]]
 name = "zz"
 path = "src/bin/zz.rs"
 
