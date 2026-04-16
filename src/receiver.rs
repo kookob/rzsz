@@ -120,7 +120,7 @@ pub fn try_zmodem<R: Read + AsFd, W: Write>(
         // Send ZRINIT with our capabilities
         // Header layout: hdr[0]=ZF3, hdr[1]=ZF2, hdr[2]=ZF1, hdr[3]=ZF0
         let mut flags = [0u8; 4];
-        flags[3] = CANFDX | CANOVIO | CANFC32; // ZF0: capabilities
+        flags[3] = CANFDX | CANOVIO | CANBRK | CANFC32; // ZF0: capabilities
         if session.escape_all_ctrl {
             flags[3] |= ESCCTL;
         }

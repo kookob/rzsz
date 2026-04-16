@@ -177,6 +177,15 @@ fn main() {
         i += 1;
     }
 
+    // Output "rz waiting to receive." BEFORE raw mode so terminal emulators
+    // (Xshell, iTerm2, SecureCRT) can detect ZModem and enter transfer mode.
+    {
+        use std::io::Write;
+        let mut out = stdout().lock();
+        let _ = out.write_all(b"rz waiting to receive.\r\n");
+        let _ = out.flush();
+    }
+
     // Set up terminal — must be restored before exit
     let mut guard = TerminalGuard::new(0).ok();
     if let Some(ref g) = guard {
