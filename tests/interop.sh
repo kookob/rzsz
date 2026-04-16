@@ -18,10 +18,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RSZ="${1:-$PROJECT_DIR/target/x86_64-unknown-linux-musl/release/rsz}"
-RRZ="${2:-$PROJECT_DIR/target/x86_64-unknown-linux-musl/release/rrz}"
-LSZ="${3:-/ob/code/opensource/lrzsz/src/lsz}"
-LRZ="${4:-/ob/code/opensource/lrzsz/src/lrz}"
+RSZ="$(realpath "${1:-$PROJECT_DIR/target/release/rsz}" 2>/dev/null || echo "${1:-$PROJECT_DIR/target/release/rsz}")"
+RRZ="$(realpath "${2:-$PROJECT_DIR/target/release/rrz}" 2>/dev/null || echo "${2:-$PROJECT_DIR/target/release/rrz}")"
+LSZ="$(realpath "${3:-/ob/code/opensource/lrzsz/src/lsz}" 2>/dev/null || echo "${3:-/ob/code/opensource/lrzsz/src/lsz}")"
+LRZ="$(realpath "${4:-/ob/code/opensource/lrzsz/src/lrz}" 2>/dev/null || echo "${4:-/ob/code/opensource/lrzsz/src/lrz}")"
 
 # Timeouts (seconds)
 TIMEOUT_SMALL=15
@@ -42,10 +42,6 @@ done
 # ---------------------------------------------------------------------------
 TMPDIR_BASE="$(mktemp -d /tmp/rzsz-interop.XXXXXX)"
 trap 'rm -rf "$TMPDIR_BASE"' EXIT
-
-PIPE_A="$TMPDIR_BASE/pipe_a"
-PIPE_B="$TMPDIR_BASE/pipe_b"
-mkfifo "$PIPE_A" "$PIPE_B"
 
 SRCDIR="$TMPDIR_BASE/src"
 mkdir -p "$SRCDIR"
@@ -79,51 +75,18 @@ FAILED=0
 ERRORS=""
 
 # ---------------------------------------------------------------------------
-# run_transfer  sender_cmd  receiver_cmd  src_files...
-#
-# The pipe pattern:
-#   sender reads from PIPE_A, writes to PIPE_B   (stdin=PIPE_A, stdout=PIPE_B)
-#   receiver reads from PIPE_B, writes to PIPE_A  (stdin=PIPE_B, stdout=PIPE_A)
-# ---------------------------------------------------------------------------
-run_transfer() {
-    local sender_bin="$1"; shift
-    local sender_args="$1"; shift
-    local receiver_bin="$1"; shift
-    local receiver_args="$1"; shift
-    local recv_dir="$1"; shift
-    local tout="$1"; shift
-    # remaining args are source files
-    local src_files=("$@")
-
-    mkdir -p "$recv_dir"
-
-    # Launch receiver in background: reads from PIPE_B, writes to PIPE_A
-    timeout "$tout" "$receiver_bin" $receiver_args \
-        < "$PIPE_B" > "$PIPE_A" 2>/dev/null &
-    local recv_pid=$!
-
-    # Launch sender: reads from PIPE_A, writes to PIPE_B
-    timeout "$tout" "$sender_bin" $sender_args "${src_files[@]}" \
-        < "$PIPE_A" > "$PIPE_B" 2>/dev/null &
-    local send_pid=$!
-
-    # Wait for both
-    local send_rc=0 recv_rc=0
-    wait "$send_pid" 2>/dev/null || send_rc=$?
-    wait "$recv_pid" 2>/dev/null || recv_rc=$?
-
-    # Return 0 only if both succeeded
-    if [[ $send_rc -ne 0 || $recv_rc -ne 0 ]]; then
-        return 1
-    fi
-    return 0
-}
-
-# ---------------------------------------------------------------------------
 # run_test  test_name  sender_bin  sender_args  receiver_bin  receiver_args
 #           timeout  src_file...
 #
-# Runs a transfer and compares each source file with received file.
+# Runs a ZModem file transfer through a pair of named pipes and compares
+# the received files with the originals.
+#
+# Pipe wiring (bidirectional channel via two FIFOs):
+#   sender:   stdin <- PIPE_A   stdout -> PIPE_B
+#   receiver: stdin <- PIPE_B   stdout -> PIPE_A
+#
+# To avoid FIFO-open deadlock, we pre-open both pipes read-write on file
+# descriptors in the main shell, then pass them to subprocesses.
 # ---------------------------------------------------------------------------
 run_test() {
     local test_name="$1"; shift
@@ -139,33 +102,36 @@ run_test() {
 
     printf "  %-50s " "$test_name"
 
-    # For lrz, we need to cd into recv_dir (it writes to cwd)
-    # For rrz, same behavior
-    # We adjust receiver to run inside recv_dir
+    # Create fresh pipes for this test (reuse can leave stale data)
+    local pipe_a="$TMPDIR_BASE/pa_$$_${RANDOM}"
+    local pipe_b="$TMPDIR_BASE/pb_$$_${RANDOM}"
+    mkfifo "$pipe_a" "$pipe_b"
 
-    local transfer_ok=true
+    # Pre-open both pipes read-write to avoid deadlock.
+    # O_RDWR on a FIFO does not block (POSIX).
+    exec 7<>"$pipe_a"
+    exec 8<>"$pipe_b"
 
-    # Launch receiver in recv_dir
-    (cd "$recv_dir" && timeout "$tout" "$receiver_bin" $receiver_args \
-        < "$PIPE_B" > "$PIPE_A" 2>/dev/null) &
+    # Launch receiver in recv_dir (reads from pipe_b, writes to pipe_a)
+    (cd "$recv_dir" && timeout "$tout" "$receiver_bin" $receiver_args) \
+        <&8 >&7 2>/dev/null &
     local recv_pid=$!
 
-    # Launch sender
-    (timeout "$tout" "$sender_bin" $sender_args "${src_files[@]}" \
-        < "$PIPE_A" > "$PIPE_B" 2>/dev/null) &
+    # Launch sender (reads from pipe_a, writes to pipe_b)
+    timeout "$tout" "$sender_bin" $sender_args "${src_files[@]}" \
+        <&7 >&8 2>/dev/null &
     local send_pid=$!
+
+    # Close our copies of the fds so EOF propagates when processes exit
+    exec 7>&-
+    exec 8>&-
 
     local send_rc=0 recv_rc=0
     wait "$send_pid" 2>/dev/null || send_rc=$?
     wait "$recv_pid" 2>/dev/null || recv_rc=$?
 
-    if [[ $send_rc -ne 0 && $send_rc -ne 124 ]] || \
-       [[ $recv_rc -ne 0 && $recv_rc -ne 124 ]]; then
-        # 124 = timeout's exit code; some transfers may legitimately
-        # end with the receiver timing out after all data is received.
-        # We'll still check file contents below.
-        :
-    fi
+    # Clean up pipe files
+    rm -f "$pipe_a" "$pipe_b"
 
     # Compare files
     local all_match=true
