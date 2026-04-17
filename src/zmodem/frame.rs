@@ -172,6 +172,10 @@ pub struct FrameEncoder {
     last_sent: u8,
 }
 
+impl Default for FrameEncoder {
+    fn default() -> Self { Self::new() }
+}
+
 impl FrameEncoder {
     pub fn new() -> Self {
         Self {

@@ -14,7 +14,7 @@ impl TerminalGuard {
     /// Returns Err if the fd is not a terminal (e.g. a pipe).
     pub fn new(fd: RawFd) -> nix::Result<Self> {
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let original = termios::tcgetattr(&borrowed)?;
+        let original = termios::tcgetattr(borrowed)?;
         Ok(Self { fd, original })
     }
 
@@ -26,7 +26,7 @@ impl TerminalGuard {
     pub fn set_raw(&self) -> nix::Result<()> {
         let mut raw = self.original.clone();
         termios::cfmakeraw(&mut raw);
-        termios::tcsetattr(&self.borrowed_fd(), SetArg::TCSADRAIN, &raw)
+        termios::tcsetattr(self.borrowed_fd(), SetArg::TCSADRAIN, &raw)
     }
 
     /// Set raw mode with flow control enabled.
@@ -35,12 +35,12 @@ impl TerminalGuard {
         termios::cfmakeraw(&mut raw);
         raw.input_flags |= nix::sys::termios::InputFlags::IXON
             | nix::sys::termios::InputFlags::IXOFF;
-        termios::tcsetattr(&self.borrowed_fd(), SetArg::TCSADRAIN, &raw)
+        termios::tcsetattr(self.borrowed_fd(), SetArg::TCSADRAIN, &raw)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = termios::tcsetattr(&self.borrowed_fd(), SetArg::TCSADRAIN, &self.original);
+        let _ = termios::tcsetattr(self.borrowed_fd(), SetArg::TCSADRAIN, &self.original);
     }
 }

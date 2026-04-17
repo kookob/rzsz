@@ -237,7 +237,7 @@ fn send_block<R: Read + AsFd, W: Write>(
             _ => continue,
         }
     }
-    Err(io::Error::new(io::ErrorKind::Other, "too many retries"))
+    Err(io::Error::other("too many retries"))
 }
 
 fn receive_block<R: Read + AsFd>(
@@ -254,8 +254,8 @@ fn receive_block<R: Read + AsFd>(
     }
 
     let mut data = vec![0u8; block_size];
-    for i in 0..block_size {
-        data[i] = reader.read_byte(TIMEOUT_TENTHS)?;
+    for item in data.iter_mut() {
+        *item = reader.read_byte(TIMEOUT_TENTHS)?;
     }
 
     if use_crc {

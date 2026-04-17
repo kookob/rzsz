@@ -18,23 +18,29 @@ A modern Rust rewrite of the classic [lrzsz](https://ohse.de/uwe/software/lrzsz.
 
 ## Quick Start
 
-### Install from cargo
+### One-line install (recommended)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash
+```
+
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash -s -- --uninstall
+```
+
+### Other install methods
+
+```bash
+# From cargo
 cargo install rzsz
-```
 
-### Install from binary
+# From binary release
+curl -LO https://github.com/kookob/rzsz/releases/latest/download/zz-linux-x86_64-musl.tar.gz
+sudo tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/
 
-Download from [Releases](https://github.com/kookob/rzsz/releases), then:
-
-```bash
-tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/
-```
-
-### Create system symlinks (optional, replaces system rz/sz)
-
-```bash
+# Replace system rz/sz (optional)
 sudo ln -sf /usr/local/bin/zz /usr/bin/rz
 sudo ln -sf /usr/local/bin/zz /usr/bin/sz
 ```

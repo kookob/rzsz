@@ -22,17 +22,25 @@ rzsz 是经典 Unix 文件传输工具 [lrzsz](https://ohse.de/uwe/software/lrzs
 
 ## 快速开始
 
-### 方式一：cargo 安装
+### 一键安装（推荐）
 
 ```bash
-cargo install rzsz
+curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash
 ```
 
-### 方式二：下载预编译二进制（推荐）
-
-从 [Releases](https://github.com/kookob/rzsz/releases) 下载对应平台的包：
+### 卸载
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash -s -- --uninstall
+```
+
+### 其他安装方式
+
+```bash
+# cargo 安装
+cargo install rzsz
+
+# 下载预编译二进制
 # x86_64
 curl -LO https://github.com/kookob/rzsz/releases/latest/download/zz-linux-x86_64-musl.tar.gz
 sudo tar xzf zz-linux-x86_64-musl.tar.gz -C /usr/local/bin/

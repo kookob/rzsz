@@ -117,7 +117,7 @@ sudo mv /usr/bin/sz.old /usr/bin/sz
 ### Uninstall
 
 ```bash
-sudo bash install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash -s -- --uninstall
 # or manually:
 sudo rm /usr/local/bin/{zz,rz,sz,rrz,rsz,rb,sb,rrb,rsb,rx,sx,rrx,rsx}
 sudo rm /usr/bin/{zz,rz,sz} 2>/dev/null

@@ -61,6 +61,7 @@ impl ReceiverConfig {
 }
 
 /// Parsed file metadata from ZFILE header.
+#[allow(dead_code)]
 struct FileHeader {
     name: String,
     size: u64,

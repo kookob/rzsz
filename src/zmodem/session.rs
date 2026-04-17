@@ -91,6 +91,10 @@ pub struct Session {
     pub rx_window: usize,
 }
 
+impl Default for Session {
+    fn default() -> Self { Self::new() }
+}
+
 impl Session {
     pub fn new() -> Self {
         Self {
@@ -356,7 +360,7 @@ impl Session {
             match c {
                 ZPAD => {
                     // Reset CAN counter — valid frame start
-                    can_count = 0;
+
                 }
                 _ => {
                     garbage_count += 1;

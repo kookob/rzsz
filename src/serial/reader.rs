@@ -48,7 +48,7 @@ impl<R: Read + AsFd> ModemReader<R> {
 
         let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
         let n = poll(&mut fds, PollTimeout::from(timeout_ms))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         if n == 0 {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout"));

@@ -93,7 +93,7 @@ do_uninstall() {
     # Restore old lrzsz if backup exists
     if [ -f "$BIN_DIR/rz.old" ]; then
         ask "Restore old lrzsz (rz.old/sz.old)? [Y/n]"
-        read -r ans
+        read -r ans < /dev/tty
         if [ "$ans" != "n" ] && [ "$ans" != "N" ]; then
             mv "$BIN_DIR/rz.old" "$BIN_DIR/rz" 2>/dev/null && info "  Restored $BIN_DIR/rz"
             mv "$BIN_DIR/sz.old" "$BIN_DIR/sz" 2>/dev/null && info "  Restored $BIN_DIR/sz"
@@ -118,7 +118,7 @@ do_install() {
         if echo "$old_rz" | grep -q "^OURS:"; then
             info "rzsz is already installed at ${old_rz#OURS:}"
             ask "Reinstall/upgrade? [Y/n]"
-            read -r ans
+            read -r ans < /dev/tty
             if [ "$ans" = "n" ] || [ "$ans" = "N" ]; then
                 info "Cancelled."
                 exit 0
@@ -130,7 +130,7 @@ do_install() {
             warn "  Version: $old_version"
             echo ""
             ask "Remove old lrzsz and replace with rzsz? [Y/n]"
-            read -r ans
+            read -r ans < /dev/tty
             if [ "$ans" = "n" ] || [ "$ans" = "N" ]; then
                 info "Keeping old lrzsz. Installing rzsz as 'zz' only."
                 info "(You can use 'zz' command, old rz/sz stay unchanged)"
@@ -146,13 +146,13 @@ do_install() {
                 # Try to remove lrzsz package
                 if command -v apt-get &>/dev/null; then
                     ask "Also remove lrzsz system package (apt)? [y/N]"
-                    read -r ans
+                    read -r ans < /dev/tty
                     if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
                         apt-get remove -y lrzsz 2>/dev/null && info "  Removed lrzsz package" || true
                     fi
                 elif command -v yum &>/dev/null; then
                     ask "Also remove lrzsz system package (yum)? [y/N]"
-                    read -r ans
+                    read -r ans < /dev/tty
                     if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
                         yum remove -y lrzsz 2>/dev/null && info "  Removed lrzsz package" || true
                     fi

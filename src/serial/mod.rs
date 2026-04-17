@@ -6,6 +6,10 @@ use std::io::{self, Write};
 /// Protocol data writer (stdout) — newtype enforces separation at compile time.
 pub struct ProtocolWriter(io::Stdout);
 
+impl Default for ProtocolWriter {
+    fn default() -> Self { Self::new() }
+}
+
 impl ProtocolWriter {
     pub fn new() -> Self {
         Self(io::stdout())
@@ -23,6 +27,10 @@ impl Write for ProtocolWriter {
 
 /// Status/progress writer (stderr) — type-level separation from protocol I/O.
 pub struct StatusWriter(io::Stderr);
+
+impl Default for StatusWriter {
+    fn default() -> Self { Self::new() }
+}
 
 impl StatusWriter {
     pub fn new() -> Self {

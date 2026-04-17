@@ -91,10 +91,10 @@ impl BlockSizer {
     fn record_success(&mut self, bytes: usize) {
         self.total_sent += bytes as u64;
         // Grow block size if no recent errors
-        if self.total_sent - self.last_error_pos > (self.blklen as u64 * 16) {
-            if self.blklen < self.max_blklen {
-                self.blklen = (self.blklen * 2).min(self.max_blklen);
-            }
+        if self.total_sent - self.last_error_pos > (self.blklen as u64 * 16)
+            && self.blklen < self.max_blklen
+        {
+            self.blklen = (self.blklen * 2).min(self.max_blklen);
         }
     }
 }
@@ -111,7 +111,7 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
     out: &mut W,
 ) -> Result<(), ZError> {
     let mut retries = 0u32;
-    let mut can_count = 0u32;
+    
 
     // Send "rz\r" to trigger auto-start on the receiving end
     out.write_all(b"rz\r")?;
@@ -246,6 +246,7 @@ fn build_file_header(
 
 /// Send a single file via ZModem.
 /// `remote_name` optionally overrides the filename sent to receiver.
+#[allow(clippy::too_many_arguments)]
 pub fn send_file<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
@@ -256,7 +257,7 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     total_bytes_left: u64,
     remote_name: Option<&str>,
 ) -> Result<u64, ZError> {
-    let metadata = fs::metadata(path).map_err(|e| ZError::Io(e))?;
+    let metadata = fs::metadata(path).map_err(ZError::Io)?;
     if metadata.is_dir() {
         return Err(ZError::FrameError(format!("{}: is a directory", path.display())));
     }
