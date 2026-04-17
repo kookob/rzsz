@@ -9,7 +9,7 @@
 //! Part of the rzsz package, a Rust rewrite of lrzsz.
 
 use std::env;
-use std::io::{self, stdin, stdout, Write};
+use std::io::{self, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -220,12 +220,9 @@ fn do_send(program_name: &str, files: &[String], config: &SenderConfig) -> ! {
 }
 
 fn do_receive(program_name: &str, config: &ReceiverConfig) {
-    // Output trigger text for terminal emulators BEFORE raw mode
-    {
-        let mut out = stdout().lock();
-        let _ = out.write_all(b"rz waiting to receive.\r\n");
-        let _ = out.flush();
-    }
+    // Minimal trigger for terminal emulators (Xshell, etc.) — must be before raw mode
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), b"rz\r\n");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 
     let mut guard = TerminalGuard::new(0).ok();
     if let Some(ref g) = guard { let _ = g.set_raw(); }

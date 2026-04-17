@@ -139,6 +139,8 @@ fn ackbibi<R: Read + AsFd, W: Write>(
 
 /// Send ZRINIT and wait for sender's response.
 /// Equivalent to tryz() in lrz.c.
+/// Optimized: after receiving ZRQINIT, reads next header directly
+/// without resending ZRINIT (ZFILE is likely already in the buffer).
 pub fn try_zmodem<R: Read + AsFd, W: Write>(
     session: &mut Session,
     reader: &mut ModemReader<R>,
@@ -146,60 +148,68 @@ pub fn try_zmodem<R: Read + AsFd, W: Write>(
 ) -> Result<ReceivedHeader, ZError> {
     let mut retries = 0u32;
 
+    // Pre-build ZRINIT header (reused across retries)
+    let mut flags = [0u8; 4];
+    flags[3] = CANFDX | CANOVIO | CANBRK | CANFC32;
+    if session.escape_all_ctrl {
+        flags[3] |= ESCCTL;
+    }
+    let buflen = session.max_block_size as u16;
+    flags[0] = (buflen >> 8) as u8;
+    flags[1] = buflen as u8;
+
+    // Send initial ZRINIT
+    session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
+
     loop {
-        // Send ZRINIT with our capabilities
-        // Header layout: hdr[0]=ZF3, hdr[1]=ZF2, hdr[2]=ZF1, hdr[3]=ZF0
-        let mut flags = [0u8; 4];
-        flags[3] = CANFDX | CANOVIO | CANBRK | CANFC32; // ZF0: capabilities
-        if session.escape_all_ctrl {
-            flags[3] |= ESCCTL;
-        }
-        // Buffer size in ZF3:ZF2 (big-endian within those bytes)
-        let buflen = session.max_block_size as u16;
-        flags[0] = (buflen >> 8) as u8;  // ZF3: high byte
-        flags[1] = buflen as u8;          // ZF2: low byte
-
-        session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
-
+        // Read next header (C lrz: "again:" label)
         match session.receive_header(reader) {
             Ok(hdr) => match hdr.frame_type {
-                FrameType::ZrqInit => continue, // Sender still initializing
+                FrameType::ZrqInit => {
+                    // ZFILE typically follows in the same buffer.
+                    // Resend ZRINIT and immediately read again.
+                    session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
+                    continue; // Go to receive_header, not rebuild flags
+                }
                 FrameType::ZFile => {
-                    // Set CRC mode based on sender's frame encoding
                     if hdr.encoding == FrameEncoding::Bin32 {
                         session.encoder.use_crc32 = true;
                     }
                     return Ok(hdr);
                 }
                 FrameType::ZsInit => {
-                    // Sender init — read attention string
                     let mut attn_buf = Vec::new();
                     let _ = session.receive_data16(reader, &mut attn_buf, ZATTNLEN);
                     session.attn = attn_buf;
                     continue;
                 }
                 FrameType::ZFin => {
-                    // ackbibi: acknowledge ZFIN and consume "OO"
                     ackbibi(session, reader, out)?;
                     return Err(ZError::Cancelled);
                 }
                 FrameType::ZFreeCnt => {
-                    // Report free space (just send a large number)
                     session.send_pos_header(FrameType::ZAck, 0x7FFF_FFFF, out)?;
                     continue;
                 }
                 FrameType::ZCommand => {
-                    // Remote commands disabled
                     let hdr = [0u8; 4];
                     session.encoder.send_hex_header(FrameType::ZCompl, &hdr, out)?;
                     continue;
                 }
+                FrameType::ZEof => {
+                    // Sender finished a file — respond with ZRINIT for next file
+                    session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
+                    continue;
+                }
+                FrameType::ZAbort => return Err(ZError::Cancelled),
                 _ => {
                     retries += 1;
                 }
             },
             Err(ZError::Timeout) => {
                 retries += 1;
+                // Resend ZRINIT on timeout
+                session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
             }
             Err(e) => return Err(e),
         }
@@ -280,7 +290,8 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
         match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size, config) {
             Ok(bytes) => {
                 if bytes > 0 {
-                    eprintln!("{}: {} bytes received", file_info.name, bytes);
+                    let msg = format!("{}: {} bytes received\n", file_info.name, bytes);
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
                 }
                 received_files.push(file_info.name);
             }

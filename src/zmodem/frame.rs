@@ -339,7 +339,6 @@ impl FrameEncoder {
             len += 1;
         }
 
-        out.flush()?;
         out.write_all(&buf[..len])?;
         out.flush()?;
         Ok(())
