@@ -137,6 +137,35 @@ fn ackbibi<R: Read + AsFd, W: Write>(
     Ok(())
 }
 
+/// Build ZRINIT flags for this session. Matches C lrz format:
+/// ZF0 = CANFDX | CANOVIO | CANFC32 (+ ESCCTL if needed),
+/// buflen = 0 (streaming mode — sender chooses block size).
+fn build_zrinit_flags(session: &Session) -> [u8; 4] {
+    let mut flags = [0u8; 4];
+    flags[3] = CANFDX | CANOVIO | CANFC32;
+    if session.escape_all_ctrl {
+        flags[3] |= ESCCTL;
+    }
+    // buflen = 0 → let sender stream. (C lrz does this.)
+    flags
+}
+
+/// Send a burst of ZRINIT frames to announce readiness.
+/// C lrz emits 5 ZRINITs back-to-back at startup so that when the
+/// terminal emulator's sz starts after the user picks a file, it
+/// sees one immediately instead of waiting for its own retry timeout.
+pub fn send_zrinit_burst<W: Write>(
+    session: &mut Session,
+    out: &mut W,
+    count: u32,
+) -> Result<(), ZError> {
+    let flags = build_zrinit_flags(session);
+    for _ in 0..count {
+        session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
+    }
+    Ok(())
+}
+
 /// Send ZRINIT and wait for sender's response.
 /// Equivalent to tryz() in lrz.c.
 /// Optimized: after receiving ZRQINIT, reads next header directly
@@ -148,17 +177,9 @@ pub fn try_zmodem<R: Read + AsFd, W: Write>(
 ) -> Result<ReceivedHeader, ZError> {
     let mut retries = 0u32;
 
-    // Pre-build ZRINIT header (reused across retries)
-    let mut flags = [0u8; 4];
-    flags[3] = CANFDX | CANOVIO | CANBRK | CANFC32;
-    if session.escape_all_ctrl {
-        flags[3] |= ESCCTL;
-    }
-    let buflen = session.max_block_size as u16;
-    flags[0] = (buflen >> 8) as u8;
-    flags[1] = buflen as u8;
+    let flags = build_zrinit_flags(session);
 
-    // Send initial ZRINIT
+    // Send initial ZRINIT (caller may have already burst several — that's fine)
     session.encoder.send_hex_header(FrameType::ZrInit, &flags, out)?;
 
     loop {
@@ -228,6 +249,13 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
     config: &ReceiverConfig,
 ) -> Result<Vec<String>, ZError> {
     let mut received_files = Vec::new();
+
+    // Startup burst: 5 back-to-back ZRINITs so the terminal emulator's
+    // sz (spawned AFTER the user picks a file) sees one immediately
+    // instead of waiting for its own retry timeout (typically 1-2s).
+    // This matches C lrz behavior and is the single biggest factor in
+    // "time from file pick to transfer start".
+    send_zrinit_burst(session, out, 5)?;
 
     loop {
         // Wait for ZFILE

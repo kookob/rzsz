@@ -286,35 +286,41 @@ pub fn send_file<R: Read + AsFd, W: Write>(
         out,
     )?;
 
-    // Wait for receiver response
+    // Wait for receiver response.
+    // Tolerate extra ZRINIT frames: C lrz sends 5 ZRINITs back-to-back
+    // at startup, and any leftovers get queued in our input buffer.
+    // Seeing ZRINIT here is NOT a "resend ZFILE" signal — only a timeout
+    // means the receiver actually lost our ZFILE. The protocol-level
+    // response to ZFILE is always ZRPOS/ZSKIP/ZCRC.
+    let mut resend_retries = 0u32;
     loop {
-        match session.receive_header(reader)? {
-            _hdr if _hdr.frame_type == FrameType::ZrInit => {
-                // Receiver didn't get our ZFILE — resend header + data
-                let hdr = [0u8; 4];
+        match session.receive_header(reader) {
+            Ok(hdr) => match hdr.frame_type {
+                FrameType::ZrInit => continue, // leftover burst — ignore
+                FrameType::ZSkip => return Ok(0),
+                FrameType::ZRpos => {
+                    let start_pos = recover_position(&hdr.hdr);
+                    return send_file_data(session, reader, out, path, start_pos, file_size, config);
+                }
+                FrameType::ZCrc => continue, // resume-mode CRC request, ignore
+                _ => continue, // unknown / stray frame — keep waiting
+            },
+            Err(ZError::Timeout) => {
+                resend_retries += 1;
+                if resend_retries > RETRY_MAX {
+                    return Err(ZError::TooManyErrors);
+                }
+                // Receiver actually lost our ZFILE — resend
+                let hdr_bytes = [0u8; 4];
                 let escape = session.escape_table.clone();
                 session.encoder.send_binary_header(
-                    FrameType::ZFile, &hdr, 0, &escape, out,
+                    FrameType::ZFile, &hdr_bytes, 0, &escape, out,
                 )?;
                 session.encoder.send_data(
                     &file_header, FrameEnd::CrcW, &escape, out,
                 )?;
-                continue;
             }
-            hdr if hdr.frame_type == FrameType::ZSkip => {
-                return Ok(0); // Receiver skipped this file
-            }
-            hdr if hdr.frame_type == FrameType::ZRpos => {
-                // Receiver wants data from this position
-                let start_pos = recover_position(&hdr.hdr);
-                return send_file_data(session, reader, out, path, start_pos, file_size, config);
-            }
-            hdr => {
-                return Err(ZError::FrameError(format!(
-                    "unexpected frame: {}",
-                    hdr.frame_type.name()
-                )));
-            }
+            Err(e) => return Err(e),
         }
     }
 }

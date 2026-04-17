@@ -344,7 +344,23 @@ impl FrameEncoder {
         Ok(())
     }
 
-    /// Send data with 16-bit CRC.
+    /// Encode one byte with ZDLE escape into a caller-provided buffer.
+    /// Returns the number of bytes written. Avoids per-byte syscalls.
+    #[inline]
+    fn encode_into(
+        buf: &mut Vec<u8>,
+        byte: u8,
+        last_sent: &mut u8,
+        escape: &EscapeTable,
+    ) {
+        let mut tmp = [0u8; 2];
+        let (len, last) = escape.encode(byte, *last_sent, &mut tmp);
+        buf.extend_from_slice(&tmp[..len]);
+        *last_sent = last;
+    }
+
+    /// Send data with 16-bit CRC — builds the full escaped frame in memory
+    /// and writes it in one call to avoid per-byte syscalls.
     pub fn send_data16<W: Write>(
         &mut self,
         data: &[u8],
@@ -352,28 +368,42 @@ impl FrameEncoder {
         escape: &EscapeTable,
         out: &mut W,
     ) -> io::Result<()> {
+        // Worst case: every byte escaped (×2) + frame terminator + CRC + XON
+        let mut buf: Vec<u8> = Vec::with_capacity(data.len() * 2 + 8);
         let mut crc: u16 = 0;
+        let mut last = self.last_sent;
+
         for &b in data {
-            self.zsendline(b, escape, out)?;
+            Self::encode_into(&mut buf, b, &mut last, escape);
             crc = update_crc16(crc, b);
         }
 
         let end_byte = frame_end.as_u8();
-        self.xsendline(ZDLE, out)?;
-        self.xsendline(end_byte, out)?;
+        // ZDLE + end_byte go raw (no escape) — matches xsendline behavior
+        buf.push(ZDLE);
+        buf.push(end_byte);
+        last = end_byte;
         crc = update_crc16(crc, end_byte);
         crc = update_crc16(update_crc16(crc, 0), 0);
-        self.zsendline((crc >> 8) as u8, escape, out)?;
-        self.zsendline(crc as u8, escape, out)?;
+
+        Self::encode_into(&mut buf, (crc >> 8) as u8, &mut last, escape);
+        Self::encode_into(&mut buf, crc as u8, &mut last, escape);
 
         if frame_end == FrameEnd::CrcW {
-            self.xsendline(XON, out)?;
+            buf.push(XON);
+            last = XON;
+        }
+
+        out.write_all(&buf)?;
+        self.last_sent = last;
+
+        if frame_end == FrameEnd::CrcW {
             out.flush()?;
         }
         Ok(())
     }
 
-    /// Send data with 32-bit CRC.
+    /// Send data with 32-bit CRC — batched, same strategy as `send_data16`.
     pub fn send_data32<W: Write>(
         &mut self,
         data: &[u8],
@@ -381,30 +411,43 @@ impl FrameEncoder {
         escape: &EscapeTable,
         out: &mut W,
     ) -> io::Result<()> {
+        let mut buf: Vec<u8> = Vec::with_capacity(data.len() * 2 + 12);
         let mut crc: u32 = 0xFFFF_FFFF;
+        let mut last = self.last_sent;
+
         for &b in data {
-            self.zsendline(b, escape, out)?;
+            Self::encode_into(&mut buf, b, &mut last, escape);
             crc = update_crc32(crc, b);
         }
 
         let end_byte = frame_end.as_u8();
-        self.xsendline(ZDLE, out)?;
-        self.xsendline(end_byte, out)?;
+        buf.push(ZDLE);
+        buf.push(end_byte);
+        last = end_byte;
         crc = update_crc32(crc, end_byte);
         crc = !crc;
+
         for _ in 0..4 {
             let c = crc as u8;
             if c & 0x60 != 0 {
-                // Non-control char: send without escaping
-                self.xsendline(c, out)?;
+                // Non-control char: send raw (matches xsendline)
+                buf.push(c);
+                last = c;
             } else {
-                self.zsendline(c, escape, out)?;
+                Self::encode_into(&mut buf, c, &mut last, escape);
             }
             crc >>= 8;
         }
 
         if frame_end == FrameEnd::CrcW {
-            self.xsendline(XON, out)?;
+            buf.push(XON);
+            last = XON;
+        }
+
+        out.write_all(&buf)?;
+        self.last_sent = last;
+
+        if frame_end == FrameEnd::CrcW {
             out.flush()?;
         }
         Ok(())
