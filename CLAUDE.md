@@ -2,53 +2,58 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
+## Overview
 
-rzsz 是 lrzsz（X/Y/ZModem 文件传输工具）的 Rust 重写版本。产出两个二进制：`rsz`（发送）和 `rrz`（接收），通过 argv[0] 检测支持 XModem（rsx/rrx）和 YModem（rsb/rrb）。
+rzsz is a Rust rewrite of lrzsz (X/Y/ZModem file transfer tool). It produces a single binary `zz` that handles both sending and receiving, with all other commands (`rz`, `sz`, `rrz`, `rsz`, etc.) as symlinks detected via argv[0].
 
-原 C 版本在 `/ob/code/opensource/lrzsz/`，协议规范在 `lrzsz/doc/zmodem-1988-10-14.txt`。
-
-## 构建和测试
+## Build and Test
 
 ```bash
-cargo build                    # 开发构建
-cargo build --release          # 优化构建（opt-level=s, LTO, strip, panic=abort）
-cargo test                     # 运行所有单元测试
-cargo test --test interop      # 互操作测试（与 C 版 lrzsz）
+cargo build                    # dev build
+cargo build --release          # optimized (opt-level=s, LTO, strip, panic=abort)
+cargo test                     # unit tests
+bash tests/interop.sh          # interop tests (requires lrzsz C binaries)
+
+# static musl build
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-Release 二进制目标 < 500KB（musl static）。
+Release binary target: < 500KB (musl static).
 
-## 架构
+## Architecture
 
-**核心设计原则：零全局变量，显式状态机，类型级 I/O 隔离。**
+**Core principles: zero globals, explicit state machine, type-safe I/O separation.**
 
 ```
 src/
-├── lib.rs                    # 库入口
-├── bin/
-│   ├── rsz.rs                # 发送端（argv[0] 检测协议）
-│   └── rrz.rs                # 接收端
+├── bin/zz.rs           # Single binary: argv[0] → send/receive/protocol detection
+├── sender.rs           # ZModem send: handshake, adaptive blocks, multi-file batch
+├── receiver.rs         # ZModem receive: ZRINIT negotiation, ackbibi, resume
+├── xmodem.rs           # XModem: 128B/1K blocks, CRC-16/checksum
+├── ymodem.rs           # YModem: batch transfer, file headers, path sanitization
 ├── zmodem/
-│   ├── frame.rs              # 帧编解码（FrameEncoder）、协议常量、FrameType 枚举（20 种）
-│   ├── crc.rs                # CRC-16/CRC-32 查找表和函数
-│   ├── escape.rs             # ZDLE 转义表（EscapeTable）
-│   └── session.rs            # Session 状态机、ZError、帧收发逻辑
+│   ├── frame.rs        # FrameEncoder, FrameType enum (20 types), protocol constants
+│   ├── crc.rs          # CRC-16/CRC-32 lookup tables
+│   ├── escape.rs       # ZDLE escape table (EscapeTable, turbo mode)
+│   └── session.rs      # Session state machine, header receive, ZDLE decoding
 └── serial/
-    ├── mod.rs                # ProtocolWriter/StatusWriter newtype（编译期隔离 stdout/stderr）
-    ├── reader.rs             # ModemReader：poll() 超时缓冲读取（替代 alarm/SIGALRM）
-    └── terminal.rs           # TerminalGuard：RAII 终端模式管理（Drop 自动恢复）
+    ├── mod.rs           # ProtocolWriter/StatusWriter newtype (compile-time I/O isolation)
+    ├── reader.rs        # ModemReader: poll() timeout, unread_byte pushback
+    └── terminal.rs      # TerminalGuard: RAII terminal mode restore (BorrowedFd)
 ```
 
-**关键类型映射（C → Rust）：**
-- 50+ 全局变量 → `Session` 结构体字段
-- `zgethdr()` goto 状态机 → `Session::receive_header()` + `match FrameType`
-- `setjmp/longjmp` → `AtomicBool` 信号标志 + `signal_hook`
-- `alarm()/SIGALRM` → `nix::poll::poll()` 超时
-- stdout/stderr 混合 → `ProtocolWriter`/`StatusWriter` newtype
+## Key Design Notes
 
-## 依赖
+- argv[0] detection: `zz`=auto, `rz/rrz/lrz`=receive, `sz/rsz/lsz`=send, `rb/sb`=YModem, `rx/sx`=XModem
+- CRC-16 formula: `table[(crc>>8)&255] ^ (crc<<8) ^ byte` (matches C macro exactly)
+- ZModem header byte order: ZF0=hdr[3], ZF1=hdr[2], ZF2=hdr[1], ZF3=hdr[0]
+- Session end: receiver must implement ackbibi() to consume sender's "OO" before terminal restore
+- TerminalGuard uses BorrowedFd (not OwnedFd) to avoid closing stdin on drop
+- CAN (0x18) and ZDLE (0x18) are same byte — receive_header resets CAN counter on ZPAD
+- Default overwrite on receive; `-p` protects, `-E` renames
 
-- `nix` — termios、poll、signal（POSIX 系统调用）
-- `signal-hook` — 安全信号处理
-- `log` + `env_logger` — 日志
+## Dependencies
+
+- `nix` — termios, poll, signal (POSIX syscalls)
+- `signal-hook` — safe signal handling
+- `log` + `env_logger` — logging

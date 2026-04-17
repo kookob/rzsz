@@ -170,7 +170,7 @@ See [PUBLISHING.md](PUBLISHING.md) for crates.io and GitHub Release instructions
 
 ## License
 
-GPL-2.0-or-later (same as lrzsz)
+Apache-2.0
 
 ## Credits
 

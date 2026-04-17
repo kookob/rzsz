@@ -191,7 +191,7 @@ src/
 
 ## 许可证
 
-GPL-2.0-or-later（与 lrzsz 相同）
+Apache-2.0
 
 ## 致谢
 
