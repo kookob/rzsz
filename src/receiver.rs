@@ -285,15 +285,24 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
                 received_files.push(file_info.name);
             }
             Err(ZError::Io(ref e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                // Pipe closed — session ending, not a real error
+                break Ok(received_files);
+            }
+            Err(ZError::Cancelled) => {
+                // User cancelled — send cancel and exit immediately
+                let _ = session.encoder.send_cancel(&mut *out);
+                if !file_info.name.is_empty() {
+                    eprintln!("error receiving {}: transfer cancelled", file_info.name);
+                }
+                break Ok(received_files);
+            }
+            Err(ZError::Timeout) => {
+                // Timeout likely means sender gave up — exit
                 break Ok(received_files);
             }
             Err(e) => {
                 if !file_info.name.is_empty() {
                     eprintln!("error receiving {}: {}", file_info.name, e);
                 }
-                // Drain remaining data from sender until ZEOF or timeout
-                // so we can continue with the next file.
                 drain_until_eof(session, reader);
             }
         }

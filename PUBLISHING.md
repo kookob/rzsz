@@ -1,4 +1,4 @@
-# Publishing Guide / 发布指南
+# Publishing Guide
 
 ## Publish to crates.io
 
@@ -54,12 +54,12 @@ cargo publish
 
 GitHub Actions builds 4 targets automatically:
 
-| File | Target | Recommended |
-|------|--------|-------------|
-| `zz-linux-x86_64.tar.gz` | Linux x86_64 (glibc) | |
-| `zz-linux-x86_64-musl.tar.gz` | Linux x86_64 (static) | Yes |
-| `zz-linux-aarch64.tar.gz` | Linux ARM64 (glibc) | |
-| `zz-linux-aarch64-musl.tar.gz` | Linux ARM64 (static) | Yes |
+| File                           | Target                | Recommended |
+| ------------------------------ | --------------------- | ----------- |
+| `zz-linux-x86_64.tar.gz`       | Linux x86_64 (glibc)  |             |
+| `zz-linux-x86_64-musl.tar.gz`  | Linux x86_64 (static) | Yes         |
+| `zz-linux-aarch64.tar.gz`      | Linux ARM64 (glibc)   |             |
+| `zz-linux-aarch64-musl.tar.gz` | Linux ARM64 (static)  | Yes         |
 
 Each tarball contains:
 
