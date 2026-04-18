@@ -21,13 +21,19 @@ use rzsz::receiver::{self, ReceiverConfig};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Detect mode from argv[0].
-/// Returns Some(true) for forced send, Some(false) for forced receive, None for auto.
-fn detect_mode(name: &str) -> Option<bool> {
+#[derive(Copy, Clone, PartialEq)]
+enum Proto { Z, Y, X }
+
+/// Detect (send/receive, protocol) from argv[0]. None → auto-detect (zz).
+fn detect_mode(name: &str) -> Option<(bool, Proto)> {
     match name {
-        "sz" | "rsz" | "lsz" | "sb" | "rsb" | "lsb" | "sx" | "rsx" | "lsx" => Some(true),
-        "rz" | "rrz" | "lrz" | "rb" | "rrb" | "lrb" | "rx" | "rrx" | "lrx" => Some(false),
-        _ => None, // "zz" or unknown → auto-detect
+        "sz" | "rsz" | "lsz" => Some((true, Proto::Z)),
+        "rz" | "rrz" | "lrz" => Some((false, Proto::Z)),
+        "sb" | "rsb" | "lsb" => Some((true, Proto::Y)),
+        "rb" | "rrb" | "lrb" => Some((false, Proto::Y)),
+        "sx" | "rsx" | "lsx" => Some((true, Proto::X)),
+        "rx" | "rrx" | "lrx" => Some((false, Proto::X)),
+        _ => None,
     }
 }
 
@@ -64,7 +70,7 @@ fn main() {
         .and_then(|a| a.rsplit('/').next())
         .unwrap_or("zz");
 
-    let forced_mode = detect_mode(program_name);
+    let forced = detect_mode(program_name);
 
     // Parse options (shared between send and receive)
     let mut send_cfg = SenderConfig::default();
@@ -73,6 +79,7 @@ fn main() {
         ..Default::default()
     };
     let mut files: Vec<String> = Vec::new();
+    let mut xmodem_1k = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -103,8 +110,8 @@ fn main() {
             // Send-specific
             "-f" | "--full-path" => { send_cfg.full_path = true; }
             "-T" | "--turbo" => { send_cfg.turbo = true; }
-            "-k" | "--1024" => { send_cfg.max_block = 1024; }
-            "-8" | "--try-8k" => { send_cfg.max_block = 8192; }
+            "-k" | "--1024" => { send_cfg.max_block = 1024; xmodem_1k = true; }
+            "-8" | "--try-8k" => { send_cfg.max_block = 8192; xmodem_1k = true; }
             // Receive-specific
             "-y" | "--overwrite" => { recv_cfg.protect = false; recv_cfg.rename = false; }
             "-p" | "--protect" => { recv_cfg.protect = true; recv_cfg.rename = false; }
@@ -124,8 +131,8 @@ fn main() {
                         'r' => { send_cfg.resume = true; recv_cfg.resume = true; }
                         'f' => send_cfg.full_path = true,
                         'T' => send_cfg.turbo = true,
-                        'k' => send_cfg.max_block = 1024,
-                        '8' => send_cfg.max_block = 8192,
+                        'k' => { send_cfg.max_block = 1024; xmodem_1k = true; }
+                        '8' => { send_cfg.max_block = 8192; xmodem_1k = true; }
                         'y' => { recv_cfg.protect = false; recv_cfg.rename = false; }
                         'p' => { recv_cfg.protect = true; recv_cfg.rename = false; }
                         'j' => recv_cfg.junk_path = true,
@@ -144,20 +151,102 @@ fn main() {
         i += 1;
     }
 
-    // Determine mode: send or receive
-    let is_send = match forced_mode {
-        Some(send) => send,
-        None => !files.is_empty(), // zz: auto-detect by presence of files
+    // Determine mode: send or receive, and protocol
+    let (is_send, proto) = match forced {
+        Some((s, p)) => (s, p),
+        None => (!files.is_empty(), Proto::Z), // zz: auto-detect, ZModem
     };
 
-    if is_send {
-        if files.is_empty() {
-            eprintln!("usage: {program_name} [options] file...");
-            process::exit(1);
+    match (is_send, proto) {
+        (true, Proto::X) => {
+            if files.is_empty() {
+                eprintln!("usage: {program_name} [options] file");
+                process::exit(1);
+            }
+            do_xmodem_send(program_name, &files[0], xmodem_1k);
         }
-        do_send(program_name, &files, &send_cfg);
-    } else {
-        do_receive(program_name, &recv_cfg);
+        (false, Proto::X) => {
+            let dest = files.first().cloned().unwrap_or_else(|| "xmodem.out".to_string());
+            do_xmodem_receive(program_name, &dest);
+        }
+        (true, Proto::Y) => {
+            if files.is_empty() {
+                eprintln!("usage: {program_name} [options] file...");
+                process::exit(1);
+            }
+            do_ymodem_send(program_name, &files);
+        }
+        (false, Proto::Y) => do_ymodem_receive(program_name, recv_cfg.quiet),
+        (true, Proto::Z) => {
+            if files.is_empty() {
+                eprintln!("usage: {program_name} [options] file...");
+                process::exit(1);
+            }
+            do_send(program_name, &files, &send_cfg);
+        }
+        (false, Proto::Z) => do_receive(program_name, &recv_cfg),
+    }
+}
+
+fn do_xmodem_send(program_name: &str, file: &str, use_1k: bool) -> ! {
+    let guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard { let _ = g.set_raw(); }
+    let stdin_fd = stdin();
+    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+    let mut out = stdout().lock();
+    let result = rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(file), use_1k);
+    drop(out); drop(reader); drop(guard);
+    match result {
+        Ok(bytes) => { eprintln!("\r{file}: {bytes} bytes sent"); process::exit(0); }
+        Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+    }
+}
+
+fn do_xmodem_receive(program_name: &str, dest: &str) -> ! {
+    let guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard { let _ = g.set_raw(); }
+    let stdin_fd = stdin();
+    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+    let mut out = stdout().lock();
+    let result = rzsz::xmodem::xmodem_receive(&mut reader, &mut out, &PathBuf::from(dest), true);
+    drop(out); drop(reader); drop(guard);
+    match result {
+        Ok(bytes) => { eprintln!("\r{dest}: {bytes} bytes received"); process::exit(0); }
+        Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+    }
+}
+
+fn do_ymodem_send(program_name: &str, files: &[String]) -> ! {
+    let guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard { let _ = g.set_raw(); }
+    let stdin_fd = stdin();
+    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+    let mut out = stdout().lock();
+    let paths: Vec<&Path> = files.iter().map(|s| Path::new(s.as_str())).collect();
+    let result = rzsz::ymodem::ymodem_send(&mut reader, &mut out, &paths);
+    drop(out); drop(reader); drop(guard);
+    match result {
+        Ok(bytes) => { eprintln!("\r{bytes} bytes sent"); process::exit(0); }
+        Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
+    }
+}
+
+fn do_ymodem_receive(program_name: &str, quiet: bool) -> ! {
+    let guard = TerminalGuard::new(0).ok();
+    if let Some(ref g) = guard { let _ = g.set_raw(); }
+    let stdin_fd = stdin();
+    let mut reader = ModemReader::new(stdin_fd.lock(), 16384);
+    let mut out = stdout().lock();
+    let result = rzsz::ymodem::ymodem_receive(&mut reader, &mut out, &PathBuf::from("."));
+    drop(out); drop(reader); drop(guard);
+    match result {
+        Ok(files) => {
+            if !quiet {
+                for f in &files { eprintln!("\rreceived: {f}"); }
+            }
+            process::exit(0);
+        }
+        Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
     }
 }
 

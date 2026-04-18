@@ -47,6 +47,22 @@ SRCDIR="$TMPDIR_BASE/src"
 mkdir -p "$SRCDIR"
 
 # ---------------------------------------------------------------------------
+# Protocol symlinks (argv[0] -> protocol dispatch)
+#   Rust side: sx/sb/rx/rb -> rsz/rrz
+#   C side:    lsx/lsb/lrx/lrb -> lsz/lrz
+# ---------------------------------------------------------------------------
+BIN_DIR="$TMPDIR_BASE/bin"
+mkdir -p "$BIN_DIR"
+ln -s "$RSZ" "$BIN_DIR/sx"
+ln -s "$RSZ" "$BIN_DIR/sb"
+ln -s "$RRZ" "$BIN_DIR/rx"
+ln -s "$RRZ" "$BIN_DIR/rb"
+ln -s "$LSZ" "$BIN_DIR/lsx"
+ln -s "$LSZ" "$BIN_DIR/lsb"
+ln -s "$LRZ" "$BIN_DIR/lrx"
+ln -s "$LRZ" "$BIN_DIR/lrb"
+
+# ---------------------------------------------------------------------------
 # Create test files
 # ---------------------------------------------------------------------------
 printf 'Hello, ZModem world!!!\n\n' > "$SRCDIR/small.txt"       # 24 bytes
@@ -165,6 +181,72 @@ run_test() {
 }
 
 # ---------------------------------------------------------------------------
+# run_xmodem_test  test_name  sender_bin  receiver_bin  timeout  src_file
+#
+# XModem has no filename in the protocol; receiver writes to a fixed path.
+# XModem also pads each block (128 or 1024 bytes), so we compare only the
+# first N bytes where N = original file size.
+# ---------------------------------------------------------------------------
+run_xmodem_test() {
+    local test_name="$1"
+    local sender_bin="$2"
+    local receiver_bin="$3"
+    local tout="$4"
+    local src="$5"
+
+    local recv_dir="$TMPDIR_BASE/recv_$$_${RANDOM}"
+    mkdir -p "$recv_dir"
+    local dest_name="xmodem.out"
+
+    printf "  %-50s " "$test_name"
+
+    local pipe_a="$TMPDIR_BASE/pa_$$_${RANDOM}"
+    local pipe_b="$TMPDIR_BASE/pb_$$_${RANDOM}"
+    mkfifo "$pipe_a" "$pipe_b"
+    exec 7<>"$pipe_a"
+    exec 8<>"$pipe_b"
+
+    (cd "$recv_dir" && timeout "$tout" "$receiver_bin" "$dest_name") \
+        <&8 >&7 2>/dev/null &
+    local recv_pid=$!
+
+    timeout "$tout" "$sender_bin" "$src" <&7 >&8 2>/dev/null &
+    local send_pid=$!
+
+    exec 7>&-
+    exec 8>&-
+
+    wait "$send_pid" 2>/dev/null || true
+    wait "$recv_pid" 2>/dev/null || true
+
+    rm -f "$pipe_a" "$pipe_b"
+
+    local received="$recv_dir/$dest_name"
+    local all_match=true
+    if [[ ! -f "$received" ]]; then
+        all_match=false
+    else
+        local src_size
+        src_size=$(stat -c%s "$src")
+        # cmp -n N compares only first N bytes, tolerating XModem pad tail
+        if ! cmp -n "$src_size" "$src" "$received" >/dev/null 2>&1; then
+            all_match=false
+        fi
+    fi
+
+    if $all_match; then
+        echo "PASS"
+        PASSED=$((PASSED + 1))
+    else
+        echo "FAIL"
+        FAILED=$((FAILED + 1))
+        ERRORS="${ERRORS}  FAIL: ${test_name}\n"
+    fi
+
+    rm -rf "$recv_dir"
+}
+
+# ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
 echo "=== rsz -> lrz ==="
@@ -189,6 +271,30 @@ echo ""
 echo "=== rsz -> lrz multi-file ==="
 run_test "rsz->lrz multi (small+medium)" "$RSZ" "-q" "$LRZ" "-q -y" "$TIMEOUT_LARGE" \
     "$SRCDIR/small.txt" "$SRCDIR/medium.bin"
+echo ""
+
+echo "=== YModem ==="
+run_test "sb->lrb small text"      "$BIN_DIR/sb" "" "$BIN_DIR/lrb" "-q -y" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_test "sb->lrb medium binary"   "$BIN_DIR/sb" "" "$BIN_DIR/lrb" "-q -y" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_test "sb->lrb large binary"    "$BIN_DIR/sb" "" "$BIN_DIR/lrb" "-q -y" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
+run_test "lsb->rb small text"      "$BIN_DIR/lsb" "-q" "$BIN_DIR/rb" "" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_test "lsb->rb medium binary"   "$BIN_DIR/lsb" "-q" "$BIN_DIR/rb" "" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_test "lsb->rb large binary"    "$BIN_DIR/lsb" "-q" "$BIN_DIR/rb" "" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
+run_test "sb->rb small text"       "$BIN_DIR/sb" "" "$BIN_DIR/rb" "" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_test "sb->rb medium binary"    "$BIN_DIR/sb" "" "$BIN_DIR/rb" "" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_test "sb->rb large binary"     "$BIN_DIR/sb" "" "$BIN_DIR/rb" "" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
+echo ""
+
+echo "=== XModem ==="
+run_xmodem_test "sx->lrx small text"      "$BIN_DIR/sx" "$BIN_DIR/lrx" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_xmodem_test "sx->lrx medium binary"   "$BIN_DIR/sx" "$BIN_DIR/lrx" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_xmodem_test "sx->lrx large binary"    "$BIN_DIR/sx" "$BIN_DIR/lrx" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
+run_xmodem_test "lsx->rx small text"      "$BIN_DIR/lsx" "$BIN_DIR/rx" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_xmodem_test "lsx->rx medium binary"   "$BIN_DIR/lsx" "$BIN_DIR/rx" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_xmodem_test "lsx->rx large binary"    "$BIN_DIR/lsx" "$BIN_DIR/rx" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
+run_xmodem_test "sx->rx small text"       "$BIN_DIR/sx" "$BIN_DIR/rx" "$TIMEOUT_SMALL" "$SRCDIR/small.txt"
+run_xmodem_test "sx->rx medium binary"    "$BIN_DIR/sx" "$BIN_DIR/rx" "$TIMEOUT_SMALL" "$SRCDIR/medium.bin"
+run_xmodem_test "sx->rx large binary"     "$BIN_DIR/sx" "$BIN_DIR/rx" "$TIMEOUT_LARGE" "$SRCDIR/large.bin"
 echo ""
 
 # ---------------------------------------------------------------------------

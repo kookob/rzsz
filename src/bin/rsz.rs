@@ -47,18 +47,23 @@ fn main() {
 
     // XModem and YModem paths
     if protocol == "xmodem" {
-        // Parse args, get first file
+        // Parse args, get first file; detect -k/-8 or --1024/--try-8k for 1K blocks
         let files: Vec<String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).cloned().collect();
         if files.is_empty() {
             eprintln!("usage: {program_name} file");
             process::exit(1);
         }
+        let use_1k = args.iter().skip(1).any(|a| {
+            a == "-k" || a == "--1024" || a == "-8" || a == "--try-8k"
+                || (a.starts_with('-') && !a.starts_with("--")
+                    && (a.contains('k') || a.contains('8')))
+        });
         let _guard = TerminalGuard::new(0).ok();
         if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
         let stdin_fd = stdin();
         let mut reader = rzsz::serial::reader::ModemReader::new(stdin_fd.lock(), 16384);
         let mut out = stdout().lock();
-        let result = rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(&files[0]), false);
+        let result = rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(&files[0]), use_1k);
         drop(out);
         drop(reader);
         drop(_guard);

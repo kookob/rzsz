@@ -39,12 +39,11 @@ pub fn ymodem_send<R: Read + AsFd, W: Write>(
         // Wait for 'C' from receiver
         let use_crc = wait_for_crc(reader)?;
 
-        // Send block 0: filename + size
+        // Send block 0: filename + size (send_ymodem_block consumes the ACK)
         let header = build_ymodem_header(&file_name, file_size);
         send_ymodem_block(reader, out, &header, 0, use_crc)?;
 
-        // Wait for ACK then C
-        wait_for_byte(reader, ACK)?;
+        // After ACK'ing block 0, receiver sends 'C' to request data start
         let use_crc = wait_for_crc(reader)?;
 
         // Send file data using XModem-1K blocks (skip handshake)
@@ -189,30 +188,6 @@ fn wait_for_crc<R: Read + AsFd>(reader: &mut ModemReader<R>) -> Result<bool, io:
         }
     }
     Err(io::Error::new(io::ErrorKind::TimedOut, "no CRC request"))
-}
-
-fn wait_for_byte<R: Read + AsFd>(
-    reader: &mut ModemReader<R>,
-    expected: u8,
-) -> Result<(), io::Error> {
-    for _ in 0..RETRY_MAX {
-        match reader.read_byte(TIMEOUT_TENTHS) {
-            Ok(b) if b == expected => return Ok(()),
-            Ok(CAN) => {
-                // Require two consecutive CAN bytes to cancel
-                if let Ok(CAN) = reader.read_byte(TIMEOUT_TENTHS) {
-                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
-                }
-                // Single CAN — ignore and keep waiting
-                continue;
-            }
-            _ => continue,
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!("waiting for {:#x}", expected),
-    ))
 }
 
 fn send_ymodem_block<R: Read + AsFd, W: Write>(

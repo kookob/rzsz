@@ -91,6 +91,16 @@ zz --help             # Show all options
 | `sx` / `rsx` | Send | XModem |
 | `rx` / `rrx` | Receive | XModem |
 
+### X/YModem limitations
+
+X/YModem are provided for compatibility. Only ZModem mode honors the full option set. On X/YModem paths:
+
+- **XModem send**: `-k` / `-8` selects 1024-byte blocks; other send options are ignored.
+- **XModem receive**: the first non-flag argument is the destination filename (XModem has no filename in the protocol). Output is padded to the block boundary.
+- **YModem receive**: `-q` suppresses the `received:` line; `-p` / `-y` / `-E` / `-r` / `-R` / `-U` have no effect (files are always overwritten into the current directory with the filename from block 0).
+
+For full option support, use ZModem (the default).
+
 ## Comparison with lrzsz
 
 | | rzsz | lrzsz |

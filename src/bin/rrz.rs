@@ -65,6 +65,10 @@ fn main() {
         process::exit(0);
     }
     if protocol == "ymodem" {
+        let quiet = args.iter().skip(1).any(|a| {
+            a == "-q" || a == "--quiet"
+                || (a.starts_with('-') && !a.starts_with("--") && a.contains('q'))
+        });
         let _guard = TerminalGuard::new(0).ok();
         if let Some(ref guard) = _guard { let _ = guard.set_raw(); }
         let stdin_fd = stdin();
@@ -75,7 +79,11 @@ fn main() {
         drop(reader);
         drop(_guard);
         match result {
-            Ok(files) => { for f in &files { eprintln!("\rreceived: {f}"); } }
+            Ok(files) => {
+                if !quiet {
+                    for f in &files { eprintln!("\rreceived: {f}"); }
+                }
+            }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
         process::exit(0);
