@@ -21,13 +21,13 @@ A modern Rust rewrite of the classic [lrzsz](https://ohse.de/uwe/software/lrzsz.
 ### One-line install (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash
+curl -fsSL "https://raw.githubusercontent.com/kookob/rzsz/main/install.sh?t=$(date +%s)" | sudo bash
 ```
 
 ### Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash -s -- --uninstall
+curl -fsSL "https://raw.githubusercontent.com/kookob/rzsz/main/install.sh?t=$(date +%s)" | sudo bash -s -- --uninstall
 ```
 
 ### Other install methods
