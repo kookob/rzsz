@@ -25,13 +25,13 @@ rzsz 是经典 Unix 文件传输工具 [lrzsz](https://ohse.de/uwe/software/lrzs
 ### 一键安装（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash
+curl -fsSL "https://raw.githubusercontent.com/kookob/rzsz/main/install.sh?t=$(date +%s)" | sudo bash
 ```
 
 ### 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kookob/rzsz/main/install.sh | sudo bash -s -- --uninstall
+curl -fsSL "https://raw.githubusercontent.com/kookob/rzsz/main/install.sh?t=$(date +%s)" | sudo bash -s -- --uninstall
 ```
 
 ### 其他安装方式
