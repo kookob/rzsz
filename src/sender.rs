@@ -100,10 +100,12 @@ impl BlockSizer {
 }
 
 /// Wait for receiver init (ZRINIT). Equivalent to getzrxinit() in lsz.c.
-/// Maximum ZRQINIT attempts before giving up (keep low for responsive cancel).
-const INIT_RETRIES: u32 = 4;
-/// Timeout per init attempt in tenths of seconds (3 seconds).
-const INIT_TIMEOUT_TENTHS: u32 = 30;
+/// Maximum ZRQINIT attempts before giving up. Matches C lsz so terminal
+/// emulators that pop a "Save as..." dialog (Xshell, SecureCRT) have time
+/// to respond with ZRINIT.
+const INIT_RETRIES: u32 = 14;
+/// Timeout per init attempt in tenths of seconds (10 seconds).
+const INIT_TIMEOUT_TENTHS: u32 = 100;
 
 pub fn get_receiver_init<R: Read + AsFd, W: Write>(
     session: &mut Session,

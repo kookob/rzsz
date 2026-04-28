@@ -1,6 +1,6 @@
 [package]
 name = "rzsz"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "X/Y/ZModem file transfer tool — a modern Rust rewrite of lrzsz. Single binary, drop-in rz/sz replacement."
 license = "Apache-2.0"
