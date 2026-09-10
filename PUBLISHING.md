@@ -16,11 +16,30 @@ cargo login <your-api-token>
 # 2. Verify package contents
 cargo package --list
 
-# 3. Dry run (check without publishing)
+# 3. Dry run (check without publishing; needs a clean tree, or add --allow-dirty)
 cargo publish --dry-run
 
-# 4. Publish
+# 4. Publish (commit + tag first, see below — cargo refuses a dirty tree)
 cargo publish
+```
+
+Normally you do not run `cargo publish` by hand: pushing a `v*` tag runs the
+`publish` job in `.github/workflows/release.yml`, which publishes to crates.io
+through [Trusted Publishing](https://crates.io/docs/trusted-publishing) (OIDC,
+no token stored in the repo). The job refuses to run if the tag does not match
+the version in `Cargo.toml`.
+
+One-time setup (crate owner): crates.io → rzsz → Settings → Trusted Publishing →
+GitHub: owner `kookob`, repository `rzsz`, workflow `release.yml`, no
+environment. Until that is done the job fails and you must `cargo publish`
+manually (that is how v0.1.3 ended up tagged but never published).
+
+Pre-flight before tagging (same gates as CI):
+
+```bash
+cargo test
+cargo clippy -- -D warnings
+bash tests/interop.sh
 ```
 
 After publishing, users can install with:

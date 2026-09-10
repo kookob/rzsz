@@ -107,7 +107,11 @@ impl Session {
             max_block_size: 1024,
             attn: Vec::new(),
             escape_all_ctrl: false,
-            rx_window: 8192,
+            // Garbage tolerated per header search. C lrz uses
+            // Zrwindow (1400) + baudrate (38400 on a pty). After a mid-stream
+            // ZRPOS the stale data still in flight must fit in here times
+            // RETRY_MAX, or the receiver gives up before it resyncs.
+            rx_window: 40_000,
         }
     }
 
@@ -176,24 +180,19 @@ impl Session {
                 _ => return Ok(c as u16),
             }
 
-            // After ZDLE — read the escaped byte
+            // After ZDLE — read the escaped byte (C zdlread2: up to 3 more
+            // CANs are swallowed, then the final byte is interpreted; a 5th
+            // CAN in a row means abort).
             loop {
-                let c = reader.read_byte(self.rx_timeout_tenths)?;
-                match c {
-                    // CAN*5 abort detection
-                    0x18 => {
-                        let c2 = reader.read_byte(self.rx_timeout_tenths)?;
-                        if c2 == 0x18 {
-                            let c3 = reader.read_byte(self.rx_timeout_tenths)?;
-                            if c3 == 0x18 {
-                                let c4 = reader.read_byte(self.rx_timeout_tenths)?;
-                                if c4 == 0x18 {
-                                    return Err(ZError::Cancelled);
-                                }
-                            }
-                        }
-                        return Err(ZError::FrameError("partial CAN sequence".into()));
+                let mut c = reader.read_byte(self.rx_timeout_tenths)?;
+                for _ in 0..3 {
+                    if c != 0x18 {
+                        break;
                     }
+                    c = reader.read_byte(self.rx_timeout_tenths)?;
+                }
+                match c {
+                    0x18 => return Err(ZError::Cancelled),
                     ZCRCE | ZCRCG | ZCRCQ | ZCRCW => {
                         return Ok(c as u16 | 0x100);
                     }
@@ -398,6 +397,22 @@ impl Session {
                     continue;
                 }
             }
+        }
+    }
+
+    /// Receive a data subpacket. The CRC width follows the encoding of the
+    /// header that introduced the frame (C zrdata: Rxframeind == ZBIN32).
+    pub fn receive_data<R: Read + AsFd>(
+        &self,
+        reader: &mut ModemReader<R>,
+        buf: &mut Vec<u8>,
+        max_len: usize,
+        crc32: bool,
+    ) -> Result<FrameEnd, ZError> {
+        if crc32 {
+            self.receive_data32(reader, buf, max_len)
+        } else {
+            self.receive_data16(reader, buf, max_len)
         }
     }
 

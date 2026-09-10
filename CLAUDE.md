@@ -13,6 +13,7 @@ cargo build                    # dev build
 cargo build --release          # optimized (opt-level=s, LTO, strip, panic=abort)
 cargo test                     # unit tests
 bash tests/interop.sh          # interop tests (requires lrzsz C binaries)
+CORRUPT=3000000 python3 tests/ptytest.py up rz /path/to/lsz big.bin   # pty + fault injection (resync)
 
 # static musl build
 cargo build --release --target x86_64-unknown-linux-musl

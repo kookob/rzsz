@@ -67,6 +67,15 @@ impl<R: Read + AsFd> ModemReader<R> {
         Ok(self.buffer[0])
     }
 
+    /// Non-blocking check for pending input. Equivalent to rdchk() in lsz.c.
+    pub fn data_available(&mut self) -> bool {
+        if self.pushback.is_some() || self.pos < self.len {
+            return true;
+        }
+        let mut fds = [PollFd::new(self.inner.as_fd(), PollFlags::POLLIN)];
+        matches!(poll(&mut fds, PollTimeout::ZERO), Ok(n) if n > 0)
+    }
+
     /// Discard any buffered data.
     pub fn purge(&mut self) {
         self.pos = 0;

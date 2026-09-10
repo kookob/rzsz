@@ -269,6 +269,8 @@ fn do_send(program_name: &str, files: &[String], config: &SenderConfig) -> ! {
         }
 
         if let Err(e) = sender::get_receiver_init(&mut session, &mut reader, &mut out) {
+            // C lsz: canit() so a terminal stuck in ZModem mode lets go
+            let _ = session.encoder.send_cancel(&mut out);
             drop(out); drop(reader); drop(guard);
             eprintln!("{program_name}: {e}");
             process::exit(1);
@@ -293,9 +295,18 @@ fn do_send(program_name: &str, files: &[String], config: &SenderConfig) -> ! {
                     }
                     bytes_left = bytes_left.saturating_sub(bytes);
                 }
-                Err(e) => {
+                Err(rzsz::zmodem::session::ZError::Io(e)) => {
+                    // Local problem (unreadable file): skip it, keep going
                     eprintln!("\r{program_name}: {file_path}: {e}");
                     errors += 1;
+                }
+                Err(e) => {
+                    // Protocol failure: abort the batch like C lsz (canit),
+                    // otherwise the terminal keeps eating our output.
+                    let _ = session.encoder.send_cancel(&mut out);
+                    drop(out); drop(reader); drop(guard);
+                    eprintln!("\r{program_name}: {file_path}: {e}");
+                    process::exit(1);
                 }
             }
         }
@@ -342,6 +353,9 @@ fn do_receive(program_name: &str, config: &ReceiverConfig) {
             Err(rzsz::zmodem::session::ZError::Io(ref e))
                 if e.kind() == io::ErrorKind::BrokenPipe => 0,
             Err(ref e) => {
+                // C lrz: canit() so the terminal's sz stops and the shell
+                // doesn't get the rest of the transfer as keystrokes
+                let _ = session.encoder.send_cancel(&mut out);
                 let msg = format!("{program_name}: {e}");
                 drop(out); drop(reader); guard.take();
                 eprintln!("{msg}");

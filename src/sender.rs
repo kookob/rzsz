@@ -133,7 +133,8 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
             Ok(hdr) => match hdr.frame_type {
                 FrameType::ZrInit => {
                     let rx_flags = hdr.hdr[3];
-                    let rx_buflen = ((hdr.hdr[0] as u16) << 8) | hdr.hdr[1] as u16;
+                    // ZP0 = low byte, ZP1 = high byte (C: Rxhdr[ZP0] + Rxhdr[ZP1]<<8)
+                    let rx_buflen = hdr.hdr[0] as usize | (hdr.hdr[1] as usize) << 8;
 
                     if rx_flags & CANFC32 != 0 {
                         session.encoder.use_crc32 = true;
@@ -143,10 +144,13 @@ pub fn get_receiver_init<R: Read + AsFd, W: Write>(
                         session.escape_table =
                             crate::zmodem::escape::EscapeTable::new(true, false);
                     }
-                    if rx_buflen > 0 {
-                        session.max_block_size =
-                            (rx_buflen as usize).min(MAX_BLOCK);
-                    }
+                    // Receiver buffer limit caps our block size (C lsz:
+                    // blklen = min(blklen, Rxbuflen)); 0 means streaming.
+                    session.max_block_size = if rx_buflen >= 32 {
+                        rx_buflen.min(MAX_BLOCK)
+                    } else {
+                        MAX_BLOCK
+                    };
 
                     return Ok(());
                 }
@@ -327,6 +331,103 @@ pub fn send_file<R: Read + AsFd, W: Write>(
     }
 }
 
+/// What the receiver said on the reverse channel while we were streaming.
+enum RxEvent {
+    Nothing,
+    /// ZRPOS: restart from this offset (the latest one queued wins).
+    Resync(u64),
+    /// ZSKIP / ZRINIT: receiver is done with this file.
+    Skip,
+    /// ZACK for the position we were waiting on (wait_ack only).
+    Ack,
+}
+
+/// Block until the receiver acknowledges `position` (after a ZCRCW block).
+/// Equivalent to getinsync(zi, 0) at lsz.c's waitack label. While we wait
+/// we are reading, not pumping data, so stale ZRPOS frames get consumed
+/// here instead of each one triggering another burst.
+fn wait_ack<R: Read + AsFd, W: Write>(
+    session: &mut Session,
+    reader: &mut ModemReader<R>,
+    out: &mut W,
+    position: u64,
+    file_size: u64,
+) -> Result<RxEvent, ZError> {
+    loop {
+        match session.receive_header(reader) {
+            Ok(hdr) => match hdr.frame_type {
+                FrameType::ZAck => {
+                    if recover_position(&hdr.hdr) == position {
+                        return Ok(RxEvent::Ack);
+                    }
+                }
+                FrameType::ZRpos => {
+                    let pos = recover_position(&hdr.hdr);
+                    if pos > file_size {
+                        return Err(ZError::FrameError("ZRPOS beyond file size".into()));
+                    }
+                    return Ok(RxEvent::Resync(pos));
+                }
+                FrameType::ZSkip | FrameType::ZrInit => return Ok(RxEvent::Skip),
+                FrameType::ZFin | FrameType::ZCan | FrameType::ZAbort => {
+                    return Err(ZError::Cancelled)
+                }
+                _ => {}
+            },
+            Err(e @ (ZError::Io(_) | ZError::Cancelled | ZError::Timeout)) => return Err(e),
+            Err(_) => session.send_pos_header(FrameType::ZNak, 0, out)?,
+        }
+    }
+}
+
+/// Drain pending input without blocking and interpret any headers in it.
+/// Equivalent to the rdchk()/getinsync() loops in lsz.c zsendfdata: the
+/// receiver may have queued several ZRPOS while it was skipping in-flight
+/// data; we must consume them all and act on the last one, or each stale
+/// ZRPOS drags the restart position backwards one at a time.
+fn poll_receiver<R: Read + AsFd, W: Write>(
+    session: &mut Session,
+    reader: &mut ModemReader<R>,
+    out: &mut W,
+    file_size: u64,
+) -> Result<RxEvent, ZError> {
+    let mut event = RxEvent::Nothing;
+    while reader.data_available() {
+        let c = reader.read_byte(1)?;
+        match c {
+            ZPAD | 0x18 => {
+                reader.unread_byte(c);
+                match session.receive_header(reader) {
+                    Ok(hdr) => match hdr.frame_type {
+                        FrameType::ZRpos => {
+                            let pos = recover_position(&hdr.hdr);
+                            if pos > file_size {
+                                return Err(ZError::FrameError("ZRPOS beyond file size".into()));
+                            }
+                            event = RxEvent::Resync(pos);
+                        }
+                        FrameType::ZAck => {}
+                        FrameType::ZSkip | FrameType::ZrInit => return Ok(RxEvent::Skip),
+                        FrameType::ZFin | FrameType::ZCan | FrameType::ZAbort => {
+                            return Err(ZError::Cancelled)
+                        }
+                        _ => {}
+                    },
+                    Err(e @ (ZError::Io(_) | ZError::Cancelled | ZError::Timeout)) => return Err(e),
+                    // Garbled header: C getinsync answers ZNAK and keeps reading
+                    Err(_) => session.send_pos_header(FrameType::ZNak, 0, out)?,
+                }
+            }
+            // Fake XOFF from the line: wait a while for the XON
+            XOFF | 0x93 => {
+                let _ = reader.read_byte(100);
+            }
+            _ => {} // junk
+        }
+    }
+    Ok(event)
+}
+
 /// Send file data starting from a position. Uses iterative resync (no recursion).
 fn send_file_data<R: Read + AsFd, W: Write>(
     session: &mut Session,
@@ -338,14 +439,29 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     config: &SenderConfig,
 ) -> Result<u64, ZError> {
     let mut file = BufReader::new(File::open(path).map_err(ZError::Io)?);
-    let mut sizer = BlockSizer::new(config.max_block.min(MAX_BLOCK));
+    let mut sizer = BlockSizer::new(config.max_block.min(session.max_block_size));
     let mut buf = vec![0u8; MAX_BLOCK];
     let mut position = start_pos;
     let mut bytes_sent: u64 = 0;
     let mut retries = 0u32;
+    // Offset of the last ZRPOS (C lsz: Lastsync). The first block sent from
+    // there goes out as ZCRCW and we wait for its ZACK: one round trip that
+    // re-establishes sync instead of streaming blindly into a receiver that
+    // may still be discarding stale data and repeating its ZRPOS.
+    let mut last_sync: Option<u64> = None;
 
     // Outer loop: handles ZRPOS resync by seeking and restarting data send
     'resync: loop {
+        // Anything the receiver queued meanwhile? Take the last ZRPOS.
+        match poll_receiver(session, reader, out, file_size)? {
+            RxEvent::Resync(pos) => {
+                position = pos;
+                last_sync = Some(pos);
+            }
+            RxEvent::Skip => return Ok(0),
+            RxEvent::Nothing | RxEvent::Ack => {}
+        }
+
         file.seek(SeekFrom::Start(position)).map_err(ZError::Io)?;
 
         // Send ZDATA header with current position
@@ -375,6 +491,8 @@ fn send_file_data<R: Read + AsFd, W: Write>(
             let at_eof = position + n as u64 >= file_size;
             let frame_end = if at_eof {
                 FrameEnd::CrcE
+            } else if last_sync == Some(position) {
+                FrameEnd::CrcW // C: bytcnt == Lastsync -> ZCRCW, then waitack
             } else {
                 FrameEnd::CrcG
             };
@@ -388,10 +506,45 @@ fn send_file_data<R: Read + AsFd, W: Write>(
             if at_eof {
                 break;
             }
+
+            if frame_end == FrameEnd::CrcW {
+                match wait_ack(session, reader, out, position, file_size)? {
+                    RxEvent::Ack => continue 'resync, // new ZDATA frame from here
+                    RxEvent::Resync(pos) => {
+                        sizer.record_error();
+                        position = pos;
+                        last_sync = Some(pos);
+                        continue 'resync;
+                    }
+                    RxEvent::Skip => return Ok(0),
+                    RxEvent::Nothing => unreachable!(),
+                }
+            }
+
+            // Streaming: peek at the reverse channel between blocks so a
+            // ZRPOS (receiver lost data) is honoured now, not after the
+            // whole file has gone out. C lsz: rdchk() loop in zsendfdata.
+            out.flush()?;
+            match poll_receiver(session, reader, out, file_size)? {
+                RxEvent::Resync(pos) => {
+                    // Close the open frame, then restart (C: ZSDATA(txbuf,
+                    // 0, ZCRCE) before resync). Like C lsz, ZRPOS is never
+                    // counted toward giving up: the receiver may repeat it
+                    // while stale data is still in flight.
+                    let escape = session.escape_table.clone();
+                    session.encoder.send_data(&[], FrameEnd::CrcE, &escape, out)?;
+                    sizer.record_error();
+                    position = pos;
+                    last_sync = Some(pos);
+                    continue 'resync;
+                }
+                RxEvent::Skip => return Ok(0),
+                RxEvent::Nothing | RxEvent::Ack => {}
+            }
         }
 
-        // Send ZEOF
-        session.send_pos_header(FrameType::ZEof, position, out)?;
+        // Send ZEOF (binary header, like C lsz)
+        session.send_bin_pos_header(FrameType::ZEof, position, out)?;
 
         // Wait for response
         loop {
@@ -400,16 +553,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
                     FrameType::ZrInit => {
                         return Ok(bytes_sent);
                     }
-                    FrameType::ZAck => {
-                        return Ok(bytes_sent);
-                    }
                     FrameType::ZRpos => {
-                        retries += 1;
-                        if retries > RETRY_MAX {
-                            return Err(ZError::TooManyErrors);
-                        }
-                        sizer.record_error();
-
                         let new_pos = recover_position(&hdr.hdr);
                         // Validate position
                         if new_pos > file_size {
@@ -417,15 +561,23 @@ fn send_file_data<R: Read + AsFd, W: Write>(
                                 "ZRPOS beyond file size".into(),
                             ));
                         }
+                        sizer.record_error();
                         position = new_pos;
+                        last_sync = Some(new_pos);
                         continue 'resync; // Iterative resync
                     }
                     FrameType::ZSkip => return Ok(0),
+                    FrameType::ZFin | FrameType::ZCan | FrameType::ZAbort => {
+                        return Err(ZError::Cancelled)
+                    }
+                    // ZACK (of a ZCRCQ/ZCRCW) is not the answer to ZEOF:
+                    // C lsz resends ZEOF and keeps waiting for ZRINIT.
                     _ => {
                         retries += 1;
                         if retries > RETRY_MAX {
                             return Err(ZError::TooManyErrors);
                         }
+                        session.send_bin_pos_header(FrameType::ZEof, position, out)?;
                     }
                 },
                 Err(ZError::Timeout) => {
@@ -434,7 +586,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
                         return Err(ZError::TooManyErrors);
                     }
                     // Resend ZEOF
-                    session.send_pos_header(FrameType::ZEof, position, out)?;
+                    session.send_bin_pos_header(FrameType::ZEof, position, out)?;
                 }
                 Err(e) => return Err(e),
             }
