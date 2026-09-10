@@ -17,7 +17,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             name: zz-linux-aarch64-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -43,7 +43,7 @@ jobs:
             ln -s zz $name
           done
           tar czhf ../${{ matrix.name }}.tar.gz *
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.tar.gz
@@ -54,9 +54,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
       - run: ls -R
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             zz-linux-x86_64/zz-linux-x86_64.tar.gz
@@ -75,7 +75,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Tag must match Cargo.toml version
         run: |
