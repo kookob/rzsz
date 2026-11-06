@@ -68,7 +68,7 @@ fn main() {
         drop(reader);
         drop(_guard);
         match result {
-            Ok(bytes) => { eprintln!("\r{}: {} bytes sent", files[0], bytes); }
+            Ok(_bytes) => { eprintln!("\rComplete: {}", files[0]); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
         process::exit(0);
@@ -90,7 +90,7 @@ fn main() {
         drop(reader);
         drop(_guard);
         match result {
-            Ok(bytes) => { eprintln!("\r{} bytes sent", bytes); }
+            Ok(_bytes) => { eprintln!("\rComplete"); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
         process::exit(0);
@@ -232,7 +232,7 @@ fn main() {
             ) {
                 Ok(bytes) => {
                     if bytes > 0 && !config.quiet {
-                        eprintln!("\r{}: {} bytes sent", file_path, bytes);
+                        eprintln!("\rComplete: {}", file_path);
                     }
                     bytes_left = bytes_left.saturating_sub(bytes);
                 }

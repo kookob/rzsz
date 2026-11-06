@@ -7,6 +7,7 @@ use std::io::{Read, Write, Seek, SeekFrom, BufWriter};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsFd;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::serial::reader::ModemReader;
 use crate::zmodem::frame::*;
@@ -76,6 +77,64 @@ struct FileHeader {
 impl FileHeader {
     fn display(&self) -> String {
         String::from_utf8_lossy(&self.name).into_owned()
+    }
+}
+
+/// Displays ZMODEM receive progress on stderr.
+struct ReceiveProgress {
+    started: Instant,
+    last_update: Instant,
+    total: u64,
+    quiet: bool,
+}
+
+impl ReceiveProgress {
+    fn new(name: &str, total: u64, quiet: bool) -> Self {
+        if !quiet {
+            eprintln!("Receiving: {}", name);
+        }
+        let now = Instant::now();
+        Self {
+            started: now,
+            last_update: now - Duration::from_millis(100),
+            total,
+            quiet,
+        }
+    }
+
+    fn update(&mut self, position: u64, force: bool) {
+        if self.quiet {
+            return;
+        }
+        let now = Instant::now();
+        if !force
+            && now.duration_since(self.last_update)
+                < Duration::from_millis(100)
+        {
+            return;
+        }
+        let elapsed = now.duration_since(self.started).as_secs_f64();
+        let bps = if elapsed > 0.0 {
+            (position as f64 / elapsed) as u64
+        } else {
+            0
+        };
+        let _ = write!(
+            std::io::stderr(),
+            "\rBytes received: {}/{}   B/s:{}\x1b[K",
+            position,
+            self.total,
+            bps
+        );
+        let _ = std::io::stderr().flush();
+        self.last_update = now;
+    }
+
+    fn finish(&mut self, position: u64) {
+        if !self.quiet {
+            self.update(position, true);
+            let _ = writeln!(std::io::stderr());
+        }
     }
 }
 
@@ -346,11 +405,7 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
 
         // Receive file data
         match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size, config) {
-            Ok(bytes) => {
-                if bytes > 0 {
-                    let msg = format!("{}: {} bytes received\n", file_info.display(), bytes);
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
-                }
+            Ok(_bytes) => {
                 received_files.push(file_info.display());
             }
             Err(ZError::Io(ref e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
@@ -381,7 +436,7 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     out: &mut W,
     path: &Path,
     start_pos: u64,
-    _expected_size: u64,
+    expected_size: u64,
     config: &ReceiverConfig,
 ) -> Result<u64, ZError> {
     // --protect: skip if file exists
@@ -447,6 +502,8 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
     let mut position = start_pos;
     let mut retries = 0u32;
     let mut data_buf = Vec::with_capacity(MAX_BLOCK);
+    let mut progress = ReceiveProgress::new(
+        &path.display().to_string(), expected_size, config.quiet);
 
     loop {
         // Wait for ZDATA header. Timeout, bad CRC or garbage is not fatal:
@@ -482,6 +539,7 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
                 let eof_pos = recover_position(&hdr.hdr);
                 if eof_pos == position {
                     writer.flush().map_err(ZError::Io)?;
+                    progress.finish(position);
                     return Ok(position - start_pos);
                 }
                 // Position mismatch on EOF — ignore and wait for more
@@ -489,6 +547,7 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
             }
             FrameType::ZFin => {
                 writer.flush().map_err(ZError::Io)?;
+                progress.finish(position);
                 return Ok(position - start_pos);
             }
             _ => {
@@ -518,6 +577,7 @@ fn receive_file_data<R: Read + AsFd, W: Write>(
                 return Err(ZError::Io(e));
             }
             position += data_buf.len() as u64;
+            progress.update(position, false);
             retries = 0;
 
             match frame_end {

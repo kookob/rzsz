@@ -197,7 +197,7 @@ fn do_xmodem_send(program_name: &str, file: &str, use_1k: bool) -> ! {
     let result = rzsz::xmodem::xmodem_send(&mut reader, &mut out, Path::new(file), use_1k);
     drop(out); drop(reader); drop(guard);
     match result {
-        Ok(bytes) => { eprintln!("\r{file}: {bytes} bytes sent"); process::exit(0); }
+        Ok(_bytes) => { eprintln!("\rComplete: {file}"); process::exit(0); }
         Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
     }
 }
@@ -211,7 +211,7 @@ fn do_xmodem_receive(program_name: &str, dest: &str) -> ! {
     let result = rzsz::xmodem::xmodem_receive(&mut reader, &mut out, &PathBuf::from(dest), true);
     drop(out); drop(reader); drop(guard);
     match result {
-        Ok(bytes) => { eprintln!("\r{dest}: {bytes} bytes received"); process::exit(0); }
+        Ok(_bytes) => { eprintln!("\rComplete: {dest}"); process::exit(0); }
         Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
     }
 }
@@ -226,7 +226,7 @@ fn do_ymodem_send(program_name: &str, files: &[String]) -> ! {
     let result = rzsz::ymodem::ymodem_send(&mut reader, &mut out, &paths);
     drop(out); drop(reader); drop(guard);
     match result {
-        Ok(bytes) => { eprintln!("\r{bytes} bytes sent"); process::exit(0); }
+        Ok(_bytes) => { eprintln!("\rComplete"); process::exit(0); }
         Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
     }
 }
@@ -242,7 +242,7 @@ fn do_ymodem_receive(program_name: &str, quiet: bool) -> ! {
     match result {
         Ok(files) => {
             if !quiet {
-                for f in &files { eprintln!("\rreceived: {f}"); }
+                for f in &files { eprintln!("\rComplete: {f}"); }
             }
             process::exit(0);
         }
@@ -291,7 +291,7 @@ fn do_send(program_name: &str, files: &[String], config: &SenderConfig) -> ! {
             ) {
                 Ok(bytes) => {
                     if bytes > 0 && !config.quiet {
-                        eprintln!("\r{file_path}: {bytes} bytes sent");
+                        eprintln!("\rComplete: {file_path}");
                     }
                     bytes_left = bytes_left.saturating_sub(bytes);
                 }
@@ -345,7 +345,7 @@ fn do_receive(program_name: &str, config: &ReceiverConfig) {
                 let names: Vec<String> = files.clone();
                 drop(out); drop(reader); guard.take();
                 if !config.quiet {
-                    for f in &names { eprintln!("received: {f}"); }
+                    for f in &names { eprintln!("\rComplete: {f}"); }
                 }
                 0
             }

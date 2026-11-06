@@ -5,9 +5,92 @@ use std::io::{self, Read, Write, BufReader};
 use std::fs::File;
 use std::os::unix::io::AsFd;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::serial::reader::ModemReader;
 use crate::zmodem::crc::update_crc16;
+
+/// Displays XMODEM/YMODEM transfer progress on stderr.
+struct TransferProgress {
+    started: Instant,
+    last_update: Instant,
+    // name: String,
+    direction: &'static str,
+    total: Option<u64>,
+    displayed: u64,
+    finished: bool,
+}
+
+impl TransferProgress {
+    fn new(name: &str, direction: &'static str, total: Option<u64>) -> Self {
+        eprintln!("{direction}: {name}");
+        let now = Instant::now();
+        Self {
+            started: now,
+            last_update: now - Duration::from_millis(100),
+            // name: name.to_string(),
+            direction,
+            total,
+            displayed: 0,
+            finished: false,
+        }
+    }
+
+    fn update(&mut self, bytes: u64, force: bool) {
+        let now = Instant::now();
+        if !force
+            && now.duration_since(self.last_update) < Duration::from_millis(100)
+        {
+            return;
+        }
+
+        self.displayed = bytes;
+        let elapsed = now.duration_since(self.started).as_secs_f64();
+        let bps = if elapsed > 0.0 {
+            (bytes as f64 / elapsed) as u64
+        } else {
+            0
+        };
+
+        match self.total {
+            Some(total) => {
+                let _ = write!(
+                    std::io::stderr(),
+                    "\rBytes {}: {}/{}   B/s: {} \x1b[K",
+                    if self.direction == "Sending" { "sent" } else { "received" },
+                    bytes,
+                    total,
+                    bps
+                );
+            }
+            None => {
+                let _ = write!(
+                    std::io::stderr(),
+                    "\rBytes {}: {}/-   B/s: {} \x1b[K",
+                    if self.direction == "Sending" { "sent" } else { "received" },
+                    bytes,
+                    bps
+                );
+            }
+        }
+        let _ = std::io::stderr().flush();
+        self.last_update = now;
+    }
+
+    fn finish(&mut self, bytes: u64) {
+        self.update(bytes, true);
+        let _ = writeln!(std::io::stderr());
+        self.finished = true;
+    }
+}
+
+impl Drop for TransferProgress {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = writeln!(std::io::stderr());
+        }
+    }
+}
 
 // Protocol bytes
 const SOH: u8 = 0x01;   // Start of 128-byte block
@@ -54,13 +137,18 @@ pub fn xmodem_send_blocks<R: Read + AsFd, W: Write>(
     use_crc: bool,
 ) -> Result<u64, io::Error> {
     let file = File::open(path)?;
-    let _file_size = file.metadata()?.len();
+    let file_size = file.metadata()?.len();
     let mut file = BufReader::new(file);
 
     let block_size: usize = if use_1k { 1024 } else { 128 };
     let mut buf = vec![0x1Au8; block_size]; // Pad with SUB (^Z)
     let mut sectnum: u8 = 1;
     let mut bytes_sent: u64 = 0;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut progress = TransferProgress::new(&name, "Sending", Some(file_size));
 
     loop {
         // Fill buffer from file
@@ -74,6 +162,7 @@ pub fn xmodem_send_blocks<R: Read + AsFd, W: Write>(
         send_block(reader, out, &buf, sectnum, use_crc, block_size)?;
 
         bytes_sent += n as u64;
+        progress.update(bytes_sent, false);
         sectnum = sectnum.wrapping_add(1);
     }
 
@@ -82,7 +171,10 @@ pub fn xmodem_send_blocks<R: Read + AsFd, W: Write>(
         out.write_all(&[EOT])?;
         out.flush()?;
         match reader.read_byte(TIMEOUT_TENTHS) {
-            Ok(ACK) => return Ok(bytes_sent),
+            Ok(ACK) => {
+                progress.finish(bytes_sent);
+                return Ok(bytes_sent);
+            }
             Ok(NAK) => continue,
             _ => continue,
         }
@@ -119,6 +211,11 @@ pub fn xmodem_receive_blocks<R: Read + AsFd, W: Write>(
     let mut file = File::create(dest)?;
     let mut sectnum: u8 = 1;
     let mut bytes_received: u64 = 0;
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dest.display().to_string());
+    let mut progress = TransferProgress::new(&name, "Receiving", None);
 
     loop {
         let first = match reader.read_byte(TIMEOUT_TENTHS) {
@@ -137,6 +234,7 @@ pub fn xmodem_receive_blocks<R: Read + AsFd, W: Write>(
                     Ok(BlockResult::Data(data)) => {
                         file.write_all(&data)?;
                         bytes_received += data.len() as u64;
+                        progress.update(bytes_received, false);
                         sectnum = sectnum.wrapping_add(1);
                         out.write_all(&[ACK])?;
                         out.flush()?;
@@ -157,6 +255,7 @@ pub fn xmodem_receive_blocks<R: Read + AsFd, W: Write>(
             EOT => {
                 out.write_all(&[ACK])?;
                 out.flush()?;
+                progress.finish(bytes_received);
                 break;
             }
             CAN => {

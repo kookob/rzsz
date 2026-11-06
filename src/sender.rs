@@ -5,6 +5,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write, Seek, SeekFrom, BufReader};
 use std::os::unix::io::AsFd;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::serial::reader::ModemReader;
 use crate::zmodem::frame::*;
@@ -52,6 +53,68 @@ impl SenderConfig {
     /// Returns true if verbose output should be shown (verbosity >= 1 and not quiet).
     pub fn is_verbose(&self) -> bool {
         self.verbosity > 0 && !self.quiet
+    }
+}
+
+/// Displays ZMODEM send progress on stderr.
+struct SendProgress {
+    started: Instant,
+    last_update: Instant,
+    displayed: u64,
+    file_size: u64,
+    quiet: bool,
+}
+
+impl SendProgress {
+    fn new(name: &str, file_size: u64, quiet: bool) -> Self {
+        if !quiet {
+            eprintln!("Sending: {}", name);
+        }
+        let now = Instant::now();
+        Self {
+            started: now,
+            last_update: now - Duration::from_millis(100),
+            displayed: 0,
+            file_size: file_size,
+            quiet,
+        }
+    }
+
+    fn update(&mut self, position: u64, force: bool) {
+        if self.quiet {
+            return;
+        }
+        let now = Instant::now();
+        if !force
+            && now.duration_since(self.last_update)
+                < Duration::from_millis(100)
+        {
+            return;
+        }
+
+        self.displayed = self.displayed.max(position);
+        let elapsed = now.duration_since(self.started).as_secs_f64();
+        let bps = if elapsed > 0.0 {
+            (self.displayed as f64 / elapsed) as u64
+        } else {
+            0
+        };
+        let _ = write!(
+            std::io::stderr(),
+            "\rBytes sent: {}/{}   B/s:{}\x1b[K",
+            self.displayed,
+            self.file_size,
+            bps
+        );
+        let _ = std::io::stderr().flush();
+        self.last_update = now;
+    }
+
+    fn finish(&mut self, position: u64) {
+        if !self.quiet {
+            self.update(position, true);
+            let _ = writeln!(std::io::stderr());
+        }
     }
 }
 
@@ -306,7 +369,18 @@ pub fn send_file<R: Read + AsFd, W: Write>(
                 FrameType::ZSkip => return Ok(0),
                 FrameType::ZRpos => {
                     let start_pos = recover_position(&hdr.hdr);
-                    return send_file_data(session, reader, out, path, start_pos, file_size, config);
+                    let display_name = if let Some(name) = remote_name {
+                        name.to_string()
+                    } else if config.full_path {
+                        path.to_string_lossy().into_owned()
+                    } else {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "unnamed".to_string())
+                    };
+                    let result = send_file_data(session, reader, out, path,
+                                                start_pos, file_size, &display_name, config);
+                    return result;
                 }
                 FrameType::ZCrc => continue, // resume-mode CRC request, ignore
                 _ => continue, // unknown / stray frame — keep waiting
@@ -436,6 +510,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     path: &Path,
     start_pos: u64,
     file_size: u64,
+    display_name: &str,
     config: &SenderConfig,
 ) -> Result<u64, ZError> {
     let mut file = BufReader::new(File::open(path).map_err(ZError::Io)?);
@@ -449,6 +524,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     // re-establishes sync instead of streaming blindly into a receiver that
     // may still be discarding stale data and repeating its ZRPOS.
     let mut last_sync: Option<u64> = None;
+    let mut progress = SendProgress::new(display_name, file_size, config.quiet);
 
     // Outer loop: handles ZRPOS resync by seeking and restarting data send
     'resync: loop {
@@ -502,6 +578,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
             position += n as u64;
             bytes_sent += n as u64;
             sizer.record_success(n);
+            progress.update(position, false);
 
             if at_eof {
                 break;
@@ -551,6 +628,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
             match session.receive_header(reader) {
                 Ok(hdr) => match hdr.frame_type {
                     FrameType::ZrInit => {
+                        progress.finish(position);
                         return Ok(bytes_sent);
                     }
                     FrameType::ZRpos => {
