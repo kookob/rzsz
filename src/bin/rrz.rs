@@ -59,7 +59,7 @@ fn main() {
         drop(reader);
         drop(_guard);
         match result {
-            Ok(bytes) => { eprintln!("\r{dest}: {bytes} bytes received"); }
+            Ok(_bytes) => { eprintln!("\rComplete: {dest}"); }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
         }
         process::exit(0);
@@ -81,7 +81,7 @@ fn main() {
         match result {
             Ok(files) => {
                 if !quiet {
-                    for f in &files { eprintln!("\rreceived: {f}"); }
+                    for f in &files { eprintln!("\rComplete: {f}"); }
                 }
             }
             Err(e) => { eprintln!("\r{program_name}: {e}"); process::exit(1); }
@@ -230,7 +230,7 @@ fn main() {
                 guard.take();
                 if !config.quiet {
                     for f in &names {
-                        eprintln!("received: {f}");
+                        eprintln!("Complete: {f}");
                     }
                 }
                 0

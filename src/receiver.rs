@@ -406,9 +406,6 @@ pub fn receive_files<R: Read + AsFd, W: Write>(
         // Receive file data
         match receive_file_data(session, reader, out, &file_path, start_pos, file_info.size, config) {
             Ok(_bytes) => {
-                if !config.quiet {
-                    eprintln!("\rComplete");
-                }
                 received_files.push(file_info.display());
             }
             Err(ZError::Io(ref e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {

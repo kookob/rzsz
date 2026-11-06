@@ -61,11 +61,12 @@ struct SendProgress {
     started: Instant,
     last_update: Instant,
     displayed: u64,
+    file_size: u64,
     quiet: bool,
 }
 
 impl SendProgress {
-    fn new(name: &str, quiet: bool) -> Self {
+    fn new(name: &str, file_size: u64, quiet: bool) -> Self {
         if !quiet {
             eprintln!("Sending: {}", name);
         }
@@ -74,6 +75,7 @@ impl SendProgress {
             started: now,
             last_update: now - Duration::from_millis(100),
             displayed: 0,
+            file_size: file_size,
             quiet,
         }
     }
@@ -99,8 +101,9 @@ impl SendProgress {
         };
         let _ = write!(
             std::io::stderr(),
-            "\rBytes sent: {}   B/s:{}\x1b[K",
+            "\rBytes sent: {}/{}   B/s:{}\x1b[K",
             self.displayed,
+            self.file_size,
             bps
         );
         let _ = std::io::stderr().flush();
@@ -377,11 +380,6 @@ pub fn send_file<R: Read + AsFd, W: Write>(
                     };
                     let result = send_file_data(session, reader, out, path,
                                                 start_pos, file_size, &display_name, config);
-                    if let Ok(_bytes) = &result {
-                        if !config.quiet {
-                            eprintln!("\rComplete");
-                        }
-                    }
                     return result;
                 }
                 FrameType::ZCrc => continue, // resume-mode CRC request, ignore
@@ -526,7 +524,7 @@ fn send_file_data<R: Read + AsFd, W: Write>(
     // re-establishes sync instead of streaming blindly into a receiver that
     // may still be discarding stale data and repeating its ZRPOS.
     let mut last_sync: Option<u64> = None;
-    let mut progress = SendProgress::new(display_name, config.quiet);
+    let mut progress = SendProgress::new(display_name, file_size, config.quiet);
 
     // Outer loop: handles ZRPOS resync by seeking and restarting data send
     'resync: loop {

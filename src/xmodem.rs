@@ -66,7 +66,7 @@ impl TransferProgress {
             None => {
                 let _ = write!(
                     std::io::stderr(),
-                    "\rBytes {}: {}   B/s: {} \x1b[K",
+                    "\rBytes {}: {}/-   B/s: {} \x1b[K",
                     if self.direction == "Sending" { "sent" } else { "received" },
                     bytes,
                     bps
